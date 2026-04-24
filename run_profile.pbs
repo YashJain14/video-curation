@@ -1,0 +1,41 @@
+#!/bin/bash
+#PBS -N video_profile
+#PBS -l select=1:ngpus=4
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -o profile_output.log
+#PBS -q ai
+#PBS -P 52001004
+
+cd $PBS_O_WORKDIR
+
+echo "Starting profile job on $(hostname) at $(date)"
+
+CONDA_DIR="$HOME/miniconda3"
+source "$CONDA_DIR/etc/profile.d/conda.sh"
+conda activate video_curation_env
+unset PYTHONPATH
+unset PYTHONHOME
+export PATH="$HOME/miniconda3/envs/video_curation_env/bin:$PATH"
+export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+
+echo "GPUs:    $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+echo "Python:  $(python --version 2>&1)"
+
+export SCRATCH_DIR="$HOME/scratch/video-curation"
+mkdir -p "$SCRATCH_DIR/reports"
+
+echo "Scratch: $SCRATCH_DIR"
+echo "Videos:  $(find $SCRATCH_DIR/raw_videos -name '*.mp4' | wc -l) clips"
+
+python profile_run.py \
+    --video_dir    "$SCRATCH_DIR/raw_videos" \
+    --out_dir      "$SCRATCH_DIR/embeddings" \
+    --report_dir   "$SCRATCH_DIR/reports" \
+    --frames_per_video 8 \
+    --num_gpus     4 \
+    --torchscope   "$HOME/torchscope"
+
+echo "Job completed at $(date)"
+echo "Reports:"
+ls -lh "$SCRATCH_DIR/reports/"
