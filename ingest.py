@@ -27,7 +27,9 @@ Usage:
 """
 
 import argparse
+import csv
 import os
+import shutil
 import tarfile
 import tempfile
 import time
@@ -47,9 +49,6 @@ PATH_LISTS = {
     "test":  TEST_PATH_LIST,
 }
 
-VAL_CSV_URL   = f"{S3_BASE}/annotations/val.csv"
-TRAIN_CSV_URL = f"{S3_BASE}/annotations/train.csv"
-
 
 def fetch_path_list(split: str) -> list[str]:
     """Fetch the S3 tar.gz URL list for a given split."""
@@ -62,78 +61,115 @@ def fetch_path_list(split: str) -> list[str]:
     return urls
 
 
-def download_and_extract(tar_url: str, out_dir: Path) -> dict:
+def load_label_lookup(csv_path: Path) -> dict[str, str]:
     """
-    Download one tar.gz from S3 and extract its MP4s into out_dir/<label>/.
+    Build {youtube_id: label} from the annotation CSV.
+    CSV format (no header): label, youtube_id, time_start, time_end, split, index
+    Clip filenames in the tar are: <youtube_id>_<start>_<end>.mp4
+    """
+    lookup = {}
+    with open(csv_path) as f:
+        for row in csv.reader(f):
+            if len(row) < 2:
+                continue
+            label, yt_id = row[0].strip(), row[1].strip()
+            lookup[yt_id] = label.replace(" ", "_")
+    return lookup
 
-    K400 tar layout: each part_N.tar.gz contains clips from multiple classes.
-    Each clip is at <label>/<clip_id>.mp4 inside the tar.
-    We preserve the label subdirectory from inside the tar.
+
+def download_and_extract(tar_url: str, out_dir: Path,
+                         label_lookup: dict[str, str]) -> dict:
+    """
+    Download one tar.gz from S3 and extract MPs into out_dir/<label>/.
+
+    K400 tar layout: flat ./  with filenames <yt_id>_<start>_<end>.mp4
+    Label is derived by matching the yt_id prefix against the annotation CSV.
 
     Returns {"url": ..., "status": "ok"|"failed"|"cached", "n_clips": int}
     """
-    part_name  = Path(tar_url).stem.replace(".tar", "")   # e.g. "part_0"
+    part_name   = Path(tar_url).stem.replace(".tar", "")
     done_marker = out_dir / f".{part_name}.done"
 
-    # Skip if already extracted
     if done_marker.exists():
         n = sum(1 for _ in out_dir.rglob("*.mp4"))
-        return {"url": tar_url, "status": "cached", "n_clips": n, "label": part_name}
+        return {"url": tar_url, "status": "cached", "n_clips": n}
 
     tmp_path = None
     t0 = time.perf_counter()
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stream download into a temp file
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = tmp.name
             r = requests.get(tar_url, stream=True, timeout=300)
             r.raise_for_status()
-            for chunk in r.iter_content(chunk_size=1 << 20):  # 1 MB chunks
+            for chunk in r.iter_content(chunk_size=1 << 20):
                 tmp.write(chunk)
 
-        # Extract — preserve label subdirectory structure: <label>/<clip>.mp4
         n_clips = 0
         with tarfile.open(tmp_path, "r:gz") as tf:
             for m in tf.getmembers():
                 if not m.name.endswith(".mp4"):
                     continue
-                parts = Path(m.name).parts
-                # Expected: <label>/<clip_id>.mp4  (2 parts)
-                # Fallback: flat <clip_id>.mp4     (1 part)
-                if len(parts) >= 2:
-                    label    = parts[-2]
-                    clip_name = parts[-1]
-                else:
-                    label    = "unknown"
-                    clip_name = parts[-1]
+                clip_name = Path(m.name).name          # strip leading ./
+                # filename: <yt_id>_<000000>_<000010>.mp4
+                # yt_id is everything before the last two _NNNNNN segments
+                parts  = clip_name.replace(".mp4", "").rsplit("_", 2)
+                yt_id  = parts[0] if len(parts) == 3 else clip_name
+                label  = label_lookup.get(yt_id, "unknown")
 
                 dest = out_dir / label
                 dest.mkdir(parents=True, exist_ok=True)
-                m.name = clip_name   # extract flat into dest
+                m.name = clip_name
                 tf.extract(m, path=dest)
                 n_clips += 1
 
         done_marker.touch()
         elapsed = time.perf_counter() - t0
-        return {"url": tar_url, "status": "ok",
-                "n_clips": n_clips, "label": part_name, "time_s": elapsed}
+        return {"url": tar_url, "status": "ok", "n_clips": n_clips, "time_s": elapsed}
 
     except Exception as e:
-        return {"url": tar_url, "status": f"failed: {e}", "n_clips": 0, "label": part_name}
+        return {"url": tar_url, "status": f"failed: {e}", "n_clips": 0}
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
 
-def download_annotation_csv(split: str, out_dir: Path) -> Path:
-    """Download the annotation CSV from S3 into out_dir."""
-    url      = f"{S3_BASE}/annotations/{split}.csv"
-    out_path = out_dir / f"kinetics400_{split}.csv"
+def relabel_existing(raw_dir: Path, label_lookup: dict[str, str]) -> int:
+    """
+    Move clips out of 'unknown/' into correct label folders.
+    Used to fix clips extracted before the label lookup was available.
+    Returns number of clips moved.
+    """
+    unknown_dir = raw_dir / "unknown"
+    if not unknown_dir.exists():
+        return 0
+    moved = 0
+    for mp4 in list(unknown_dir.glob("*.mp4")):
+        parts = mp4.stem.rsplit("_", 2)
+        yt_id = parts[0] if len(parts) == 3 else mp4.stem
+        label = label_lookup.get(yt_id, "unknown")
+        if label == "unknown":
+            continue
+        dest = raw_dir / label
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(mp4), str(dest / mp4.name))
+        moved += 1
+    if moved:
+        # Clean up unknown dir if empty
+        remaining = list(unknown_dir.glob("*.mp4"))
+        if not remaining:
+            unknown_dir.rmdir()
+    return moved
+
+
+def download_annotation_csv(split: str, scratch: Path) -> Path:
+    """Download the annotation CSV from S3 if not already present."""
+    out_path = scratch / f"kinetics400_{split}.csv"
     if out_path.exists():
         print(f"  CSV already exists: {out_path}")
         return out_path
+    url = f"{S3_BASE}/annotations/{split}.csv"
     print(f"  Downloading annotation CSV: {url}")
     r = requests.get(url, timeout=30)
     r.raise_for_status()
@@ -160,20 +196,25 @@ def main():
 
     print(f"Output dir : {out_dir}")
     print(f"Split      : {args.split}")
-    print(f"Tar limit  : {args.limit}  (~{args.limit * 50} clips)")
+    print(f"Tar limit  : {args.limit}")
     print(f"Workers    : {args.workers}")
 
-    # Download annotation CSV alongside videos
-    download_annotation_csv(args.split, Path(scratch))
+    csv_path     = download_annotation_csv(args.split, Path(scratch))
+    label_lookup = load_label_lookup(csv_path)
+    print(f"  Label lookup: {len(label_lookup)} entries")
 
-    # Fetch URL list and cap at limit
+    # Fix any clips already sitting in unknown/ from a previous run
+    moved = relabel_existing(out_dir, label_lookup)
+    if moved:
+        print(f"  Re-labelled {moved} existing clips from unknown/")
+
     tar_urls = fetch_path_list(args.split)[: args.limit]
 
     t0 = time.perf_counter()
     ok = failed = cached = total_clips = 0
 
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futures = {ex.submit(download_and_extract, url, out_dir): url
+        futures = {ex.submit(download_and_extract, url, out_dir, label_lookup): url
                    for url in tar_urls}
         for i, fut in enumerate(as_completed(futures), 1):
             res = fut.result()
@@ -189,6 +230,7 @@ def main():
     print(f"\nDone in {elapsed:.1f}s")
     print(f"  ok={ok}  cached={cached}  failed={failed}")
     print(f"  Total clips: {total_clips}")
+    print(f"  Labels found: {len(set(p.parent.name for p in out_dir.rglob('*.mp4')))}")
     print(f"  Output: {out_dir}")
 
 
