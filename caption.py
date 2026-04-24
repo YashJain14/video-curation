@@ -57,9 +57,14 @@ def _sample_frames_pil(batches, n, is_gpu):
 
 
 @ray.remote(num_gpus=1)
-def caption_video(video_path: str, frames_per_video: int = 4,
-                  device: str = "cuda:0") -> dict:
-    """Ray task: decode + caption one video with Qwen2.5-VL."""
+def caption_video(video_path: str, frames_per_video: int = 4) -> dict:
+    """
+    Ray task: decode + caption one video with Qwen2.5-VL-7B.
+    Uses num_gpus=1 — Qwen2.5-VL-7B in bf16 needs the full 40GB A100.
+    With 4 GPUs: 4 caption tasks run in parallel (one per GPU).
+    Ray sets CUDA_VISIBLE_DEVICES per task — always use cuda:0 inside.
+    """
+    device = "cuda:0"
     t0 = time.perf_counter()
     try:
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
@@ -79,7 +84,6 @@ def caption_video(video_path: str, frames_per_video: int = 4,
         )
         processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-        # Build message: system prompt + keyframes
         content = [{"type": "text", "text": CAPTION_PROMPT}]
         for img in frames:
             content.append({"type": "image", "image": img})
@@ -114,18 +118,19 @@ def main():
     ap.add_argument("--video_dir",        required=True)
     ap.add_argument("--out",              default="data/captions.json")
     ap.add_argument("--frames_per_video", type=int, default=4)
-    ap.add_argument("--device",           default="cuda:0")
+    ap.add_argument("--num_gpus",         type=int, default=1,
+                    help="Number of GPUs. Each caption task uses 1 full GPU → num_gpus tasks in parallel.")
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
     videos = sorted(Path(args.video_dir).rglob("*.mp4"))
     print(f"Captioning {len(videos)} videos with {MODEL_ID} ...")
+    print(f"Concurrency: {args.num_gpus} tasks (1 GPU each) across {args.num_gpus} GPU(s)")
 
-    ray.init(address=args.ray_address, ignore_reinit_error=True)
+    ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
-    # caption_video uses num_gpus=1 so tasks are serialised on a single GPU
     futures = [
-        caption_video.remote(str(v), args.frames_per_video, args.device)
+        caption_video.remote(str(v), args.frames_per_video)
         for v in videos
     ]
 

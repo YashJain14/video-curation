@@ -65,13 +65,13 @@ def task_ingest(csv: str, limit: int, workers: int):
 
 
 @task(name="embed", retries=1)
-def task_embed(frames_per_video: int, device: str):
+def task_embed(frames_per_video: int, num_gpus: int):
     _run([
         sys.executable, "embed.py",
         "--video_dir",        str(RAW_VIDEOS),
         "--out_dir",          str(EMB_DIR),
         "--frames_per_video", str(frames_per_video),
-        "--device",           device,
+        "--num_gpus",         str(num_gpus),
     ], "embed")
 
 
@@ -86,24 +86,24 @@ def task_dedup(threshold: float):
 
 
 @task(name="score", retries=1)
-def task_score(frames_per_video: int, device: str):
+def task_score(frames_per_video: int, num_gpus: int):
     _run([
         sys.executable, "score.py",
         "--video_dir",        str(RAW_VIDEOS),
         "--out",              str(DATA_DIR / "scores.json"),
         "--frames_per_video", str(frames_per_video),
-        "--device",           device,
+        "--num_gpus",         str(num_gpus),
     ], "score")
 
 
 @task(name="caption", retries=1)
-def task_caption(frames_per_video: int, device: str):
+def task_caption(frames_per_video: int, num_gpus: int):
     _run([
         sys.executable, "caption.py",
         "--video_dir",        str(RAW_VIDEOS),
         "--out",              str(DATA_DIR / "captions.json"),
         "--frames_per_video", str(frames_per_video),
-        "--device",           device,
+        "--num_gpus",         str(num_gpus),
     ], "caption")
 
 
@@ -144,7 +144,7 @@ def curation_pipeline(
     limit:             int   = 500,
     workers:           int   = 8,
     frames_per_video:  int   = 8,
-    device:            str   = "cuda:0",
+    num_gpus:          int   = 1,
     dedup_threshold:   float = 0.95,
     min_score:         float = 4.5,
     shard_size:        int   = 200,
@@ -153,6 +153,7 @@ def curation_pipeline(
     """
     End-to-end video curation pipeline.
     Set from_stage to skip completed earlier stages.
+    num_gpus is passed to Ray-based stages (embed, score, caption).
     """
     stage_idx = STAGES.index(from_stage)
 
@@ -160,16 +161,16 @@ def curation_pipeline(
         task_ingest(csv, limit, workers)
 
     if stage_idx <= STAGES.index("embed"):
-        task_embed(frames_per_video, device)
+        task_embed(frames_per_video, num_gpus)
 
     if stage_idx <= STAGES.index("dedup"):
         task_dedup(dedup_threshold)
 
     if stage_idx <= STAGES.index("score"):
-        task_score(frames_per_video, device)
+        task_score(frames_per_video, num_gpus)
 
     if stage_idx <= STAGES.index("caption"):
-        task_caption(frames_per_video, device)
+        task_caption(frames_per_video, num_gpus)
 
     if stage_idx <= STAGES.index("shard"):
         task_shard(shard_size, min_score)
@@ -185,7 +186,8 @@ def main():
     ap.add_argument("--limit",            type=int,   default=500)
     ap.add_argument("--workers",          type=int,   default=8)
     ap.add_argument("--frames_per_video", type=int,   default=8)
-    ap.add_argument("--device",           default="cuda:0")
+    ap.add_argument("--num_gpus",         type=int,   default=1,
+                    help="Number of GPUs to use for Ray-parallel stages")
     ap.add_argument("--dedup_threshold",  type=float, default=0.95)
     ap.add_argument("--min_score",        type=float, default=4.5)
     ap.add_argument("--shard_size",       type=int,   default=200)
@@ -198,7 +200,7 @@ def main():
         limit=args.limit,
         workers=args.workers,
         frames_per_video=args.frames_per_video,
-        device=args.device,
+        num_gpus=args.num_gpus,
         dedup_threshold=args.dedup_threshold,
         min_score=args.min_score,
         shard_size=args.shard_size,

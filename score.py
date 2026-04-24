@@ -95,9 +95,13 @@ def _sample_frames(batches, n, is_gpu):
 
 
 @ray.remote(num_gpus=0.25)
-def score_video(video_path: str, frames_per_video: int = 8,
-                device: str = "cuda:0") -> dict:
-    """Ray task: decode + score one video aesthetically."""
+def score_video(video_path: str, frames_per_video: int = 8) -> dict:
+    """
+    Ray task: decode + score one video aesthetically.
+    0.25 GPU per task → 4 tasks/GPU × 4 GPUs = 16 concurrent tasks.
+    Ray sets CUDA_VISIBLE_DEVICES per task — always use cuda:0 inside.
+    """
+    device = "cuda:0"
     t0 = time.perf_counter()
     try:
         batches, _, backend = decode_video(video_path, max_frames=64,
@@ -141,17 +145,18 @@ def main():
     ap.add_argument("--frames_per_video", type=int,   default=8)
     ap.add_argument("--min_score",        type=float, default=4.5,
                     help="Print how many clips pass this threshold")
-    ap.add_argument("--device",           default="cuda:0")
+    ap.add_argument("--num_gpus",         type=int,   default=1)
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
     videos = sorted(Path(args.video_dir).rglob("*.mp4"))
     print(f"Scoring {len(videos)} videos ...")
+    print(f"Concurrency: {args.num_gpus * 4} tasks across {args.num_gpus} GPU(s)")
 
-    ray.init(address=args.ray_address, ignore_reinit_error=True)
+    ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
     futures = [
-        score_video.remote(str(v), args.frames_per_video, args.device)
+        score_video.remote(str(v), args.frames_per_video)
         for v in videos
     ]
 

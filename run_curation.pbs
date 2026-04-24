@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N video_curation
-#PBS -l select=1:ncpus=16:ngpus=1:mem=64gb
+#PBS -l select=1:ncpus=32:ngpus=4:mem=128gb
 #PBS -l walltime=04:00:00
 #PBS -j oe
 #PBS -o curation_output.log
@@ -17,29 +17,35 @@ unset PYTHONHOME
 export PATH="$HOME/miniconda3/envs/video_curation_env/bin:$PATH"
 export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
 
-echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+echo "GPUs:    $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
 echo "Python:  $(python --version 2>&1)"
-echo "PyTorch: $(python -c 'import torch; print(torch.__version__)')"
+echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", torch.cuda.device_count())')"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CSV="data/kinetics400_val.csv"
 VERSION="v1"
 LIMIT=500               # number of clips to download
 FRAMES=8                # frames sampled per video for CLIP / scoring
+NUM_GPUS=4              # GPUs available on this node
 MIN_SCORE=4.5           # LAION aesthetic threshold
 DEDUP_THRESH=0.95       # cosine similarity threshold for near-dedup
 SHARD_SIZE=200          # samples per WebDataset shard
 
+# ── GPU concurrency summary ───────────────────────────────────────────────────
+# embed:   0.25 GPU/task → 16 concurrent tasks  (4 GPUs × 4 tasks/GPU)
+# score:   0.25 GPU/task → 16 concurrent tasks
+# caption: 1.0  GPU/task →  4 concurrent tasks  (one per GPU, Qwen2.5-VL-7B)
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 python dag.py \
-    --csv             $CSV \
-    --version         $VERSION \
-    --limit           $LIMIT \
+    --csv              $CSV \
+    --version          $VERSION \
+    --limit            $LIMIT \
     --frames_per_video $FRAMES \
-    --device          cuda:0 \
-    --dedup_threshold $DEDUP_THRESH \
-    --min_score       $MIN_SCORE \
-    --shard_size      $SHARD_SIZE \
-    --from_stage      ingest
+    --num_gpus         $NUM_GPUS \
+    --dedup_threshold  $DEDUP_THRESH \
+    --min_score        $MIN_SCORE \
+    --shard_size       $SHARD_SIZE \
+    --from_stage       ingest
 
 echo "Job completed at $(date)"

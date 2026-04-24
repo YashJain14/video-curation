@@ -7,11 +7,12 @@ mean embedding + per-frame embeddings in a .npz file.
 
 Design:
   - Uses Ray to parallelize across videos (one Ray task per video)
-  - Each task decodes frames, runs CLIP, returns embeddings
+  - Each task requests 0.25 GPU → 4 tasks run concurrently per GPU
+  - With 4 GPUs: 16 concurrent embed tasks
   - Results written to data/embeddings/<video_stem>.npz
 
 Usage:
-  python embed.py --video_dir data/raw_videos --out_dir data/embeddings --frames_per_video 8
+  python embed.py --video_dir data/raw_videos --out_dir data/embeddings --frames_per_video 8 --num_gpus 4
 """
 
 import argparse
@@ -55,15 +56,18 @@ def _sample_frames(batches: list, n: int, is_gpu: bool) -> list:
 
 @ray.remote(num_gpus=0.25)
 def embed_video(video_path: str, out_dir: str,
-                frames_per_video: int = 8, device: str = "cuda:0") -> dict:
+                frames_per_video: int = 8) -> dict:
     """
     Ray task: decode + embed one video.
-    Returns {"path": ..., "status": "ok"|"failed", "n_frames": int, "time_s": float}
+    Requests 0.25 GPU → 4 tasks run concurrently per GPU.
+    With 4 GPUs: 16 concurrent tasks.
+    Ray assigns the GPU via CUDA_VISIBLE_DEVICES — always use cuda:0 inside the task.
     """
     out_path = Path(out_dir) / (Path(video_path).stem + ".npz")
     if out_path.exists():
         return {"path": video_path, "status": "cached", "n_frames": 0, "time_s": 0.0}
 
+    device = "cuda:0"  # Ray sets CUDA_VISIBLE_DEVICES per task
     t0 = time.perf_counter()
     try:
         batches, _, backend = decode_video(video_path, max_frames=64,
@@ -103,20 +107,21 @@ def main():
     ap.add_argument("--video_dir",         required=True)
     ap.add_argument("--out_dir",           default="data/embeddings")
     ap.add_argument("--frames_per_video",  type=int, default=8)
-    ap.add_argument("--device",            default="cuda:0")
-    ap.add_argument("--ray_address",       default=None,
-                    help="Ray cluster address, e.g. auto. Leave blank for local.")
+    ap.add_argument("--num_gpus",          type=int, default=1,
+                    help="Number of GPUs available. Ray will spread tasks across them.")
+    ap.add_argument("--ray_address",       default=None)
     args = ap.parse_args()
 
     video_dir = Path(args.video_dir)
     videos    = sorted(video_dir.rglob("*.mp4"))
     print(f"Found {len(videos)} videos in {video_dir}")
+    # 0.25 GPU per task → 4 tasks/GPU × num_gpus concurrent tasks total
+    print(f"Concurrency: {args.num_gpus * 4} tasks across {args.num_gpus} GPU(s)")
 
-    ray.init(address=args.ray_address, ignore_reinit_error=True)
+    ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
     futures = [
-        embed_video.remote(str(v), args.out_dir,
-                           args.frames_per_video, args.device)
+        embed_video.remote(str(v), args.out_dir, args.frames_per_video)
         for v in videos
     ]
 
