@@ -24,6 +24,9 @@ echo "Python:  $(python --version 2>&1)"
 echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", torch.cuda.device_count())')"
 
 # ── Scratch storage ───────────────────────────────────────────────────────────
+export WANDB_API_KEY=<your_wandb_api_key>
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 export SCRATCH_DIR="$HOME/scratch/video-curation"
 mkdir -p "$SCRATCH_DIR"
 echo "Scratch: $SCRATCH_DIR"

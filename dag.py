@@ -30,8 +30,10 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+import wandb
 from prefect import flow, task, get_run_logger
 from prefect.tasks import task_input_hash
 from datetime import timedelta
@@ -53,8 +55,17 @@ STAGES = ["ingest", "embed", "dedup", "score", "caption", "shard", "manifest"]
 def _run(cmd: list[str], stage: str):
     logger = get_run_logger()
     logger.info(f"[{stage}] Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=True)
-    logger.info(f"[{stage}] Done (exit={result.returncode})")
+    t0 = time.perf_counter()
+    try:
+        result = subprocess.run(cmd, check=True)
+        elapsed = time.perf_counter() - t0
+        logger.info(f"[{stage}] Done (exit={result.returncode})")
+        wandb.log({f"{stage}/status": 1, f"{stage}/duration_s": elapsed})
+    except subprocess.CalledProcessError as e:
+        elapsed = time.perf_counter() - t0
+        logger.error(f"[{stage}] Failed (exit={e.returncode})")
+        wandb.log({f"{stage}/status": 0, f"{stage}/duration_s": elapsed})
+        raise
 
 
 @task(name="ingest", retries=2, retry_delay_seconds=30,
@@ -168,6 +179,19 @@ def curation_pipeline(
     Set from_stage to skip completed earlier stages.
     num_gpus is passed to Ray-based stages (embed, score, caption).
     """
+    wandb.init(
+        project="video-curation",
+        entity="rlx-labs",
+        name=f"{version}-{from_stage}",
+        config={
+            "split": split, "version": version, "limit": limit,
+            "workers": workers, "frames_per_video": frames_per_video,
+            "num_gpus": num_gpus, "dedup_threshold": dedup_threshold,
+            "min_score": min_score, "shard_size": shard_size,
+            "from_stage": from_stage,
+        },
+    )
+
     stage_idx = STAGES.index(from_stage)
 
     if stage_idx <= STAGES.index("ingest"):
@@ -190,6 +214,8 @@ def curation_pipeline(
 
     if stage_idx <= STAGES.index("manifest"):
         task_manifest(version, min_score, dedup_threshold)
+
+    wandb.finish()
 
 
 def main():

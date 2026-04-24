@@ -37,6 +37,10 @@ pip install webdataset
 # Orchestration
 pip install prefect
 
+# Experiment tracking
+pip install wandb
+export WANDB_API_KEY=<your_wandb_api_key>
+
 # Kinetics downloader
 pip install yt-dlp
 
