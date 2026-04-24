@@ -37,12 +37,15 @@ from prefect.tasks import task_input_hash
 from datetime import timedelta
 
 
-SCRATCH      = Path(os.environ.get("SCRATCH_DIR", "data"))
-DATA_DIR     = SCRATCH
-RAW_VIDEOS   = DATA_DIR / "raw_videos"
-EMB_DIR      = DATA_DIR / "embeddings"
-SHARDS_DIR   = DATA_DIR / "shards"
-MANIFEST_DIR = DATA_DIR / "manifests"
+def _paths():
+    scratch = Path(os.environ.get("SCRATCH_DIR") or os.path.expanduser("~/scratch/video-curation"))
+    return {
+        "data":     scratch,
+        "videos":   scratch / "raw_videos",
+        "emb":      scratch / "embeddings",
+        "shards":   scratch / "shards",
+        "manifest": scratch / "manifests",
+    }
 
 STAGES = ["ingest", "embed", "dedup", "score", "caption", "shard", "manifest"]
 
@@ -57,10 +60,11 @@ def _run(cmd: list[str], stage: str):
 @task(name="ingest", retries=2, retry_delay_seconds=30,
       cache_key_fn=task_input_hash, cache_expiration=timedelta(hours=24))
 def task_ingest(split: str, limit: int, workers: int):
+    p = _paths()
     _run([
         sys.executable, "ingest.py",
         "--split",   split,
-        "--out_dir", str(RAW_VIDEOS),
+        "--out_dir", str(p["videos"]),
         "--limit",   str(limit),
         "--workers", str(workers),
     ], "ingest")
@@ -68,10 +72,11 @@ def task_ingest(split: str, limit: int, workers: int):
 
 @task(name="embed", retries=1)
 def task_embed(frames_per_video: int, num_gpus: int):
+    p = _paths()
     _run([
         sys.executable, "embed.py",
-        "--video_dir",        str(RAW_VIDEOS),
-        "--out_dir",          str(EMB_DIR),
+        "--video_dir",        str(p["videos"]),
+        "--out_dir",          str(p["emb"]),
         "--frames_per_video", str(frames_per_video),
         "--num_gpus",         str(num_gpus),
     ], "embed")
@@ -79,21 +84,23 @@ def task_embed(frames_per_video: int, num_gpus: int):
 
 @task(name="dedup", retries=1)
 def task_dedup(threshold: float):
+    p = _paths()
     _run([
         sys.executable, "dedup.py",
-        "--video_dir", str(RAW_VIDEOS),
-        "--emb_dir",   str(EMB_DIR),
+        "--video_dir", str(p["videos"]),
+        "--emb_dir",   str(p["emb"]),
         "--threshold", str(threshold),
-        "--out",       str(DATA_DIR / "dedup_results.json"),
+        "--out",       str(p["data"] / "dedup_results.json"),
     ], "dedup")
 
 
 @task(name="score", retries=1)
 def task_score(frames_per_video: int, num_gpus: int):
+    p = _paths()
     _run([
         sys.executable, "score.py",
-        "--video_dir",        str(RAW_VIDEOS),
-        "--out",              str(DATA_DIR / "scores.json"),
+        "--video_dir",        str(p["videos"]),
+        "--out",              str(p["data"] / "scores.json"),
         "--frames_per_video", str(frames_per_video),
         "--num_gpus",         str(num_gpus),
     ], "score")
@@ -101,10 +108,11 @@ def task_score(frames_per_video: int, num_gpus: int):
 
 @task(name="caption", retries=1)
 def task_caption(frames_per_video: int, num_gpus: int):
+    p = _paths()
     _run([
         sys.executable, "caption.py",
-        "--video_dir",        str(RAW_VIDEOS),
-        "--out",              str(DATA_DIR / "captions.json"),
+        "--video_dir",        str(p["videos"]),
+        "--out",              str(p["data"] / "captions.json"),
         "--frames_per_video", str(frames_per_video),
         "--num_gpus",         str(num_gpus),
     ], "caption")
@@ -112,14 +120,15 @@ def task_caption(frames_per_video: int, num_gpus: int):
 
 @task(name="shard", retries=1)
 def task_shard(shard_size: int, min_score: float):
+    p = _paths()
     _run([
         sys.executable, "shard.py",
-        "--video_dir",  str(RAW_VIDEOS),
-        "--captions",   str(DATA_DIR / "captions.json"),
-        "--scores",     str(DATA_DIR / "scores.json"),
-        "--dedup",      str(DATA_DIR / "dedup_results.json"),
-        "--emb_dir",    str(EMB_DIR),
-        "--out_dir",    str(SHARDS_DIR),
+        "--video_dir",  str(p["videos"]),
+        "--captions",   str(p["data"] / "captions.json"),
+        "--scores",     str(p["data"] / "scores.json"),
+        "--dedup",      str(p["data"] / "dedup_results.json"),
+        "--emb_dir",    str(p["emb"]),
+        "--out_dir",    str(p["shards"]),
         "--shard_size", str(shard_size),
         "--min_score",  str(min_score),
     ], "shard")
@@ -127,14 +136,15 @@ def task_shard(shard_size: int, min_score: float):
 
 @task(name="manifest")
 def task_manifest(version: str, min_score: float, dedup_threshold: float):
+    p = _paths()
     _run([
         sys.executable, "manifest.py", "create",
         "--version",         version,
-        "--video_dir",       str(RAW_VIDEOS),
-        "--dedup",           str(DATA_DIR / "dedup_results.json"),
-        "--scores",          str(DATA_DIR / "scores.json"),
-        "--shards",          str(SHARDS_DIR),
-        "--out",             str(MANIFEST_DIR / f"{version}.json"),
+        "--video_dir",       str(p["videos"]),
+        "--dedup",           str(p["data"] / "dedup_results.json"),
+        "--scores",          str(p["data"] / "scores.json"),
+        "--shards",          str(p["shards"]),
+        "--out",             str(p["manifest"] / f"{version}.json"),
         "--min_score",       str(min_score),
         "--dedup_threshold", str(dedup_threshold),
     ], "manifest")
