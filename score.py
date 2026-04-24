@@ -32,6 +32,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import ray
+import wandb
 from transformers import CLIPProcessor, CLIPModel
 
 from decode import decode_video
@@ -153,6 +154,9 @@ def main():
     print(f"Scoring {len(videos)} videos ...")
     print(f"Concurrency: {args.num_gpus * 4} tasks across {args.num_gpus} GPU(s)")
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="score", resume="allow", id="score-stage")
+
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
     futures = [
@@ -162,27 +166,36 @@ def main():
 
     results = []
     ok = failed = 0
+    total = len(videos)
+    pending = list(futures)
     t0 = time.perf_counter()
-    for i, res in enumerate(ray.get(futures), 1):
-        results.append(res)
-        if res["status"] == "ok": ok     += 1
-        else:                     failed += 1
-        if i % 50 == 0 or i == len(videos):
-            print(f"  [{i}/{len(videos)}]  ok={ok}  failed={failed}  "
-                  f"elapsed={time.perf_counter()-t0:.1f}s")
 
-    scores    = [r["mean_score"] for r in results if r["status"] == "ok"]
-    passing   = sum(1 for s in scores if s >= args.min_score)
+    while pending:
+        done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
+        for res in ray.get(done):
+            results.append(res)
+            if res["status"] == "ok": ok     += 1
+            else:                     failed += 1
+        completed = ok + failed
+        elapsed = time.perf_counter() - t0
+        print(f"  [{completed}/{total}]  ok={ok}  failed={failed}  elapsed={elapsed:.1f}s")
+        wandb.log({"score/ok": ok, "score/failed": failed,
+                   "score/completed": completed, "score/total": total,
+                   "score/elapsed_s": elapsed})
+
+    scores_vals = [r["mean_score"] for r in results if r["status"] == "ok"]
+    passing     = sum(1 for s in scores_vals if s >= args.min_score)
     print(f"\nScore stats:")
-    print(f"  Mean  : {np.mean(scores):.2f}")
-    print(f"  Median: {np.median(scores):.2f}")
-    print(f"  ≥{args.min_score}: {passing}/{len(scores)}  ({100*passing/max(len(scores),1):.1f}%)")
+    print(f"  Mean  : {np.mean(scores_vals):.2f}")
+    print(f"  Median: {np.median(scores_vals):.2f}")
+    print(f"  ≥{args.min_score}: {passing}/{len(scores_vals)}  ({100*passing/max(len(scores_vals),1):.1f}%)")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nScores saved → {out}")
+    wandb.finish()
     ray.shutdown()
 
 

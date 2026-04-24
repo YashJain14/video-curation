@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import ray
+import wandb
 from PIL import Image
 
 from decode import decode_video
@@ -127,6 +128,9 @@ def main():
     print(f"Captioning {len(videos)} videos with {MODEL_ID} ...")
     print(f"Concurrency: {args.num_gpus} tasks (1 GPU each) across {args.num_gpus} GPU(s)")
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="caption", resume="allow", id="caption-stage")
+
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
     futures = [
@@ -136,22 +140,32 @@ def main():
 
     results = []
     ok = failed = 0
+    total = len(videos)
+    pending = list(futures)
     t0 = time.perf_counter()
-    for i, res in enumerate(ray.get(futures), 1):
-        results.append(res)
-        if res["status"] == "ok": ok     += 1
-        else:                     failed += 1
-        if i % 20 == 0 or i == len(videos):
-            print(f"  [{i}/{len(videos)}]  ok={ok}  failed={failed}  "
-                  f"elapsed={time.perf_counter()-t0:.1f}s")
-        if res["status"] == "ok":
-            print(f"    {Path(res['path']).name}: {res['caption'][:80]}")
+
+    while pending:
+        done, pending = ray.wait(pending, num_returns=min(20, len(pending)), timeout=60)
+        for res in ray.get(done):
+            results.append(res)
+            if res["status"] == "ok":
+                ok += 1
+                print(f"    {Path(res['path']).name}: {res['caption'][:80]}")
+            else:
+                failed += 1
+        completed = ok + failed
+        elapsed = time.perf_counter() - t0
+        print(f"  [{completed}/{total}]  ok={ok}  failed={failed}  elapsed={elapsed:.1f}s")
+        wandb.log({"caption/ok": ok, "caption/failed": failed,
+                   "caption/completed": completed, "caption/total": total,
+                   "caption/elapsed_s": elapsed})
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nCaptions saved → {out}  (ok={ok}, failed={failed})")
+    wandb.finish()
     ray.shutdown()
 
 

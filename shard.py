@@ -131,11 +131,9 @@ def main():
     t0 = time.perf_counter()
 
     # Load lookups
-    captions   = load_lookup(args.captions)
-    scores_raw = load_lookup(args.scores)
-    scores     = {r["path"]: r for r in scores_raw.values()
-                  if isinstance(r, dict) and "path" in r} if isinstance(scores_raw, dict) else scores_raw
-    dedup      = load_lookup(args.dedup)  # {"kept": [...], "removed": [...]}
+    captions   = load_lookup(args.captions)   # {path: {caption, ...}}
+    scores     = load_lookup(args.scores)      # {path: {mean_score, ...}}
+    dedup      = load_lookup(args.dedup)       # {"kept": [...], "removed": [...]}
 
     kept_set = set(dedup.get("kept", []))
     all_videos = sorted(Path(args.video_dir).rglob("*.mp4"))

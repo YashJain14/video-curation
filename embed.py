@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import ray
+import wandb
 from transformers import CLIPProcessor, CLIPModel
 
 from decode import decode_video
@@ -118,6 +119,9 @@ def main():
     # 0.25 GPU per task → 4 tasks/GPU × num_gpus concurrent tasks total
     print(f"Concurrency: {args.num_gpus * 4} tasks across {args.num_gpus} GPU(s)")
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="embed", resume="allow", id="embed-stage")
+
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
     futures = [
@@ -126,18 +130,27 @@ def main():
     ]
 
     ok = failed = cached = 0
+    total = len(videos)
+    pending = list(futures)
     t0 = time.perf_counter()
-    for i, fut in enumerate(ray.get(futures), 1):
-        s = fut["status"]
-        if   s == "ok":     ok     += 1
-        elif s == "cached": cached += 1
-        else:               failed += 1
-        if i % 50 == 0 or i == len(videos):
-            elapsed = time.perf_counter() - t0
-            print(f"  [{i}/{len(videos)}]  ok={ok}  cached={cached}  "
-                  f"failed={failed}  elapsed={elapsed:.1f}s")
+
+    while pending:
+        done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
+        for fut in ray.get(done):
+            s = fut["status"]
+            if   s == "ok":     ok     += 1
+            elif s == "cached": cached += 1
+            else:               failed += 1
+        completed = ok + failed + cached
+        elapsed = time.perf_counter() - t0
+        print(f"  [{completed}/{total}]  ok={ok}  cached={cached}  "
+              f"failed={failed}  elapsed={elapsed:.1f}s")
+        wandb.log({"embed/ok": ok, "embed/failed": failed, "embed/cached": cached,
+                   "embed/completed": completed, "embed/total": total,
+                   "embed/elapsed_s": elapsed})
 
     print(f"\nEmbeddings saved → {args.out_dir}")
+    wandb.finish()
     ray.shutdown()
 
 
