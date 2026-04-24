@@ -15,7 +15,7 @@ Why Qwen2.5-VL:
 
 Usage:
   python caption.py --video_dir data/raw_videos --out data/captions.json \
-                    --frames_per_video 4 --device cuda:0
+                    --frames_per_video 4 --num_gpus 4
 """
 
 import argparse
@@ -43,7 +43,6 @@ CAPTION_PROMPT = (
 
 
 def _sample_frames_pil(batches, n, is_gpu):
-    """Sample n frames and return as PIL Images."""
     all_frames = []
     for b in batches:
         if is_gpu:
@@ -58,60 +57,56 @@ def _sample_frames_pil(batches, n, is_gpu):
 
 
 @ray.remote(num_gpus=1)
-def caption_video(video_path: str, frames_per_video: int = 4) -> dict:
-    """
-    Ray task: decode + caption one video with Qwen2.5-VL-7B.
-    Uses num_gpus=1 — Qwen2.5-VL-7B in bf16 needs the full 40GB A100.
-    With 4 GPUs: 4 caption tasks run in parallel (one per GPU).
-    Ray sets CUDA_VISIBLE_DEVICES per task — always use cuda:0 inside.
-    """
-    device = "cuda:0"
-    t0 = time.perf_counter()
-    try:
+class CaptionWorker:
+    def __init__(self):
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
-        from qwen_vl_utils import process_vision_info
-
-        batches, _, backend = decode_video(video_path, max_frames=64,
-                                           batch_size=16, device=device)
-        is_gpu = backend != "opencv_cpu"
-        frames = _sample_frames_pil(batches, frames_per_video, is_gpu)
-        if not frames:
-            return {"path": video_path, "status": "failed: no frames", "caption": ""}
-
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        self.device = "cuda:0"
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             MODEL_ID,
             torch_dtype=torch.bfloat16,
-            device_map=device,
+            device_map=self.device,
         )
-        processor = AutoProcessor.from_pretrained(MODEL_ID)
+        self.model.eval()
+        self.processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-        content = [{"type": "text", "text": CAPTION_PROMPT}]
-        for img in frames:
-            content.append({"type": "image", "image": img})
+    def process(self, video_path: str, frames_per_video: int) -> dict:
+        from qwen_vl_utils import process_vision_info
+        t0 = time.perf_counter()
+        try:
+            batches, _, backend = decode_video(video_path, max_frames=64,
+                                               batch_size=16, device=self.device)
+            is_gpu = backend != "opencv_cpu"
+            frames = _sample_frames_pil(batches, frames_per_video, is_gpu)
+            if not frames:
+                return {"path": video_path, "status": "failed: no frames", "caption": ""}
 
-        messages = [{"role": "user", "content": content}]
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        image_inputs, _ = process_vision_info(messages)
-        inputs = processor(
-            text=[text], images=image_inputs,
-            return_tensors="pt", padding=True
-        ).to(device)
+            content = [{"type": "text", "text": CAPTION_PROMPT}]
+            for img in frames:
+                content.append({"type": "image", "image": img})
 
-        with torch.no_grad():
-            out_ids = model.generate(**inputs, max_new_tokens=128)
-        trimmed  = out_ids[:, inputs["input_ids"].shape[1]:]
-        caption  = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+            messages = [{"role": "user", "content": content}]
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            image_inputs, _ = process_vision_info(messages)
+            inputs = self.processor(
+                text=[text], images=image_inputs,
+                return_tensors="pt", padding=True
+            ).to(self.device)
 
-        return {
-            "path":    video_path,
-            "status":  "ok",
-            "caption": caption,
-            "time_s":  time.perf_counter() - t0,
-        }
-    except Exception as e:
-        return {"path": video_path, "status": f"failed: {e}", "caption": ""}
+            with torch.inference_mode():
+                out_ids = self.model.generate(**inputs, max_new_tokens=128)
+            trimmed = out_ids[:, inputs["input_ids"].shape[1]:]
+            caption = self.processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+
+            return {
+                "path":    video_path,
+                "status":  "ok",
+                "caption": caption,
+                "time_s":  time.perf_counter() - t0,
+            }
+        except Exception as e:
+            return {"path": video_path, "status": f"failed: {e}", "caption": ""}
 
 
 def main():
@@ -120,29 +115,31 @@ def main():
     ap.add_argument("--out",              default="data/captions.json")
     ap.add_argument("--frames_per_video", type=int, default=4)
     ap.add_argument("--num_gpus",         type=int, default=1,
-                    help="Number of GPUs. Each caption task uses 1 full GPU → num_gpus tasks in parallel.")
+                    help="One CaptionWorker per GPU — num_gpus tasks in parallel.")
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
     videos = sorted(Path(args.video_dir).rglob("*.mp4"))
     print(f"Captioning {len(videos)} videos with {MODEL_ID} ...")
-    print(f"Concurrency: {args.num_gpus} tasks (1 GPU each) across {args.num_gpus} GPU(s)")
+    print(f"Actors: {args.num_gpus} (1 per GPU)")
 
     wandb.init(project="video-curation", entity="rlx-labs",
                name="caption", resume="allow", id="caption-stage")
 
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
+    workers = [CaptionWorker.remote() for _ in range(args.num_gpus)]
+
     futures = [
-        caption_video.remote(str(v), args.frames_per_video)
-        for v in videos
+        workers[i % args.num_gpus].process.remote(str(v), args.frames_per_video)
+        for i, v in enumerate(videos)
     ]
 
     results = []
     ok = failed = 0
-    total = len(videos)
+    total   = len(videos)
     pending = list(futures)
-    t0 = time.perf_counter()
+    t0      = time.perf_counter()
 
     while pending:
         done, pending = ray.wait(pending, num_returns=min(20, len(pending)), timeout=60)
@@ -154,7 +151,7 @@ def main():
             else:
                 failed += 1
         completed = ok + failed
-        elapsed = time.perf_counter() - t0
+        elapsed   = time.perf_counter() - t0
         print(f"  [{completed}/{total}]  ok={ok}  failed={failed}  elapsed={elapsed:.1f}s")
         wandb.log({"caption/ok": ok, "caption/failed": failed,
                    "caption/completed": completed, "caption/total": total,

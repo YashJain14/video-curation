@@ -18,8 +18,7 @@ LAION aesthetic predictor:
   - Model weights: https://github.com/christophschuhmann/improved-aesthetic-predictor
 
 Usage:
-  python score.py --video_dir data/raw_videos --emb_dir data/embeddings \
-                  --out data/scores.json --min_score 4.5
+  python score.py --video_dir data/raw_videos --out data/scores.json --num_gpus 4
 """
 
 import argparse
@@ -38,15 +37,13 @@ from transformers import CLIPProcessor, CLIPModel
 from decode import decode_video
 
 
-CLIP_MODEL_ID = "openai/clip-vit-large-patch14"
+CLIP_MODEL_ID   = "openai/clip-vit-large-patch14"
+ACTORS_PER_GPU  = 4
+AESTHETIC_REPO  = "shunk031/improved-aesthetic-predictor"
+AESTHETIC_FILE  = "sac+logos+ava1-l14-linearMSE.pth"
 
 
 class AestheticMLP(nn.Module):
-    """
-    LAION improved aesthetic predictor MLP.
-    Input: 768-dim CLIP ViT-L/14 embedding
-    Output: scalar score
-    """
     def __init__(self):
         super().__init__()
         self.layers = nn.Sequential(
@@ -64,23 +61,6 @@ class AestheticMLP(nn.Module):
         return self.layers(x)
 
 
-def load_aesthetic_model(device: str) -> AestheticMLP:
-    """
-    Load LAION aesthetic predictor weights.
-    Downloads from HuggingFace on first run, cached after.
-    """
-    from huggingface_hub import hf_hub_download
-    weights_path = hf_hub_download(
-        repo_id="shunk031/improved-aesthetic-predictor",
-        filename="sac+logos+ava1-l14-linearMSE.pth",
-    )
-    state = torch.load(weights_path, map_location=device)
-    model = AestheticMLP().to(device)
-    model.load_state_dict(state)
-    model.eval()
-    return model
-
-
 def _sample_frames(batches, n, is_gpu):
     all_frames = []
     for b in batches:
@@ -95,48 +75,49 @@ def _sample_frames(batches, n, is_gpu):
     return [all_frames[i] for i in indices]
 
 
-@ray.remote(num_gpus=0.25)
-def score_video(video_path: str, frames_per_video: int = 8) -> dict:
-    """
-    Ray task: decode + score one video aesthetically.
-    0.25 GPU per task → 4 tasks/GPU × 4 GPUs = 16 concurrent tasks.
-    Ray sets CUDA_VISIBLE_DEVICES per task — always use cuda:0 inside.
-    """
-    device = "cuda:0"
-    t0 = time.perf_counter()
-    try:
-        batches, _, backend = decode_video(video_path, max_frames=64,
-                                           batch_size=16, device=device)
-        is_gpu = backend != "opencv_cpu"
-        frames = _sample_frames(batches, frames_per_video, is_gpu)
-        if not frames:
-            return {"path": video_path, "status": "failed: no frames",
+@ray.remote(num_gpus=1.0 / ACTORS_PER_GPU)
+class ScoreWorker:
+    def __init__(self, weights_path: str):
+        self.device = "cuda:0"
+
+        clip = CLIPModel.from_pretrained(CLIP_MODEL_ID).to(self.device)
+        clip.eval()
+        self.clip      = clip
+        self.processor = CLIPProcessor.from_pretrained(CLIP_MODEL_ID)
+
+        state = torch.load(weights_path, map_location=self.device, weights_only=True)
+        aes   = AestheticMLP().to(self.device)
+        aes.load_state_dict(state)
+        aes.eval()
+        self.aesthetic = aes
+
+    def process(self, video_path: str, frames_per_video: int) -> dict:
+        t0 = time.perf_counter()
+        try:
+            batches, _, backend = decode_video(video_path, max_frames=64,
+                                               batch_size=16, device=self.device)
+            is_gpu = backend != "opencv_cpu"
+            frames = _sample_frames(batches, frames_per_video, is_gpu)
+            if not frames:
+                return {"path": video_path, "status": "failed: no frames",
+                        "mean_score": 0.0, "frame_scores": []}
+
+            inputs = self.processor(images=frames, return_tensors="pt", padding=True).to(self.device)
+            with torch.inference_mode():
+                feats  = self.clip.get_image_features(**inputs)
+                feats  = F.normalize(feats, dim=-1)
+                scores = self.aesthetic(feats).squeeze(-1).cpu().numpy()
+
+            return {
+                "path":         video_path,
+                "status":       "ok",
+                "mean_score":   float(scores.mean()),
+                "frame_scores": scores.tolist(),
+                "time_s":       time.perf_counter() - t0,
+            }
+        except Exception as e:
+            return {"path": video_path, "status": f"failed: {e}",
                     "mean_score": 0.0, "frame_scores": []}
-
-        clip_model     = CLIPModel.from_pretrained(CLIP_MODEL_ID).to(device)
-        clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_ID)
-        clip_model.eval()
-        aesthetic_model = load_aesthetic_model(device)
-
-        inputs = clip_processor(images=frames, return_tensors="pt", padding=True).to(device)
-        with torch.no_grad():
-            feats  = clip_model.get_image_features(**inputs)        # [N, 768]
-            feats  = F.normalize(feats, dim=-1)
-            scores = aesthetic_model(feats).squeeze(-1).cpu().numpy()  # [N]
-
-        mean_score   = float(scores.mean())
-        frame_scores = scores.tolist()
-
-        return {
-            "path":         video_path,
-            "status":       "ok",
-            "mean_score":   mean_score,
-            "frame_scores": frame_scores,
-            "time_s":       time.perf_counter() - t0,
-        }
-    except Exception as e:
-        return {"path": video_path, "status": f"failed: {e}",
-                "mean_score": 0.0, "frame_scores": []}
 
 
 def main():
@@ -144,31 +125,38 @@ def main():
     ap.add_argument("--video_dir",        required=True)
     ap.add_argument("--out",              default="data/scores.json")
     ap.add_argument("--frames_per_video", type=int,   default=8)
-    ap.add_argument("--min_score",        type=float, default=4.5,
-                    help="Print how many clips pass this threshold")
+    ap.add_argument("--min_score",        type=float, default=4.5)
     ap.add_argument("--num_gpus",         type=int,   default=1)
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
-    videos = sorted(Path(args.video_dir).rglob("*.mp4"))
+    # Resolve weights path before Ray starts (avoids HF API calls inside workers)
+    from huggingface_hub import hf_hub_download
+    weights_path = hf_hub_download(repo_id=AESTHETIC_REPO, filename=AESTHETIC_FILE)
+    print(f"Aesthetic weights: {weights_path}")
+
+    videos   = sorted(Path(args.video_dir).rglob("*.mp4"))
+    n_actors = args.num_gpus * ACTORS_PER_GPU
     print(f"Scoring {len(videos)} videos ...")
-    print(f"Concurrency: {args.num_gpus * 4} tasks across {args.num_gpus} GPU(s)")
+    print(f"Actors: {n_actors} ({ACTORS_PER_GPU} per GPU × {args.num_gpus} GPUs)")
 
     wandb.init(project="video-curation", entity="rlx-labs",
                name="score", resume="allow", id="score-stage")
 
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
+    workers = [ScoreWorker.remote(weights_path) for _ in range(n_actors)]
+
     futures = [
-        score_video.remote(str(v), args.frames_per_video)
-        for v in videos
+        workers[i % n_actors].process.remote(str(v), args.frames_per_video)
+        for i, v in enumerate(videos)
     ]
 
     results = []
     ok = failed = 0
-    total = len(videos)
+    total   = len(videos)
     pending = list(futures)
-    t0 = time.perf_counter()
+    t0      = time.perf_counter()
 
     while pending:
         done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
@@ -177,7 +165,7 @@ def main():
             if res["status"] == "ok": ok     += 1
             else:                     failed += 1
         completed = ok + failed
-        elapsed = time.perf_counter() - t0
+        elapsed   = time.perf_counter() - t0
         print(f"  [{completed}/{total}]  ok={ok}  failed={failed}  elapsed={elapsed:.1f}s")
         wandb.log({"score/ok": ok, "score/failed": failed,
                    "score/completed": completed, "score/total": total,

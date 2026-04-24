@@ -6,9 +6,8 @@ Samples N frames per video, runs them through CLIP, stores per-video
 mean embedding + per-frame embeddings in a .npz file.
 
 Design:
-  - Uses Ray to parallelize across videos (one Ray task per video)
-  - Each task requests 0.25 GPU → 4 tasks run concurrently per GPU
-  - With 4 GPUs: 16 concurrent embed tasks
+  - One Ray actor per GPU slot (4 actors × 4 GPUs = 16 actors)
+  - Each actor loads CLIP once, then processes all assigned videos
   - Results written to data/embeddings/<video_stem>.npz
 
 Usage:
@@ -30,109 +29,102 @@ from decode import decode_video
 
 
 MODEL_ID = "openai/clip-vit-base-patch32"
-
-
-def _load_clip(device: str):
-    model     = CLIPModel.from_pretrained(MODEL_ID).to(device)
-    processor = CLIPProcessor.from_pretrained(MODEL_ID)
-    model.eval()
-    return model, processor
+ACTORS_PER_GPU = 4
 
 
 def _sample_frames(batches: list, n: int, is_gpu: bool) -> list:
-    """Uniformly sample n frames from decoded batches."""
     all_frames = []
     for b in batches:
         if is_gpu:
             for i in range(b.shape[0]):
-                all_frames.append(b[i].cpu().numpy())   # [H, W, C] uint8
+                all_frames.append(b[i].cpu().numpy())
         else:
-            all_frames.extend(b)                         # list of [H, W, C] uint8 numpy
-
-    if len(all_frames) == 0:
+            all_frames.extend(b)
+    if not all_frames:
         return []
     indices = np.linspace(0, len(all_frames) - 1, min(n, len(all_frames)), dtype=int)
     return [all_frames[i] for i in indices]
 
 
-@ray.remote(num_gpus=0.25)
-def embed_video(video_path: str, out_dir: str,
-                frames_per_video: int = 8) -> dict:
-    """
-    Ray task: decode + embed one video.
-    Requests 0.25 GPU → 4 tasks run concurrently per GPU.
-    With 4 GPUs: 16 concurrent tasks.
-    Ray assigns the GPU via CUDA_VISIBLE_DEVICES — always use cuda:0 inside the task.
-    """
-    out_path = Path(out_dir) / (Path(video_path).stem + ".npz")
-    if out_path.exists():
-        return {"path": video_path, "status": "cached", "n_frames": 0, "time_s": 0.0}
+@ray.remote(num_gpus=1.0 / ACTORS_PER_GPU)
+class EmbedWorker:
+    def __init__(self):
+        self.device = "cuda:0"
+        model = CLIPModel.from_pretrained(MODEL_ID).to(self.device)
+        model.eval()
+        self.model = model
+        self.processor = CLIPProcessor.from_pretrained(MODEL_ID)
 
-    device = "cuda:0"  # Ray sets CUDA_VISIBLE_DEVICES per task
-    t0 = time.perf_counter()
-    try:
-        batches, _, backend = decode_video(video_path, max_frames=64,
-                                           batch_size=16, device=device)
-        is_gpu   = backend != "opencv_cpu"
-        frames   = _sample_frames(batches, frames_per_video, is_gpu)
-        if not frames:
-            return {"path": video_path, "status": "failed: no frames", "n_frames": 0, "time_s": 0.0}
+    def process(self, video_path: str, out_dir: str, frames_per_video: int) -> dict:
+        out_path = Path(out_dir) / (Path(video_path).stem + ".npz")
+        if out_path.exists():
+            return {"path": video_path, "status": "cached", "n_frames": 0, "time_s": 0.0}
 
-        model, processor = _load_clip(device)
-        inputs = processor(images=frames, return_tensors="pt", padding=True).to(device)
+        t0 = time.perf_counter()
+        try:
+            batches, _, backend = decode_video(video_path, max_frames=64,
+                                               batch_size=16, device=self.device)
+            is_gpu = backend != "opencv_cpu"
+            frames = _sample_frames(batches, frames_per_video, is_gpu)
+            if not frames:
+                return {"path": video_path, "status": "failed: no frames",
+                        "n_frames": 0, "time_s": 0.0}
 
-        with torch.no_grad():
-            feats = model.get_image_features(**inputs)          # [N, 512]
-            feats = F.normalize(feats, dim=-1)
+            inputs = self.processor(images=frames, return_tensors="pt", padding=True).to(self.device)
+            with torch.inference_mode():
+                feats = self.model.get_image_features(**inputs)
+                feats = F.normalize(feats, dim=-1)
 
-        feats_np = feats.cpu().numpy()
-        mean_emb = feats_np.mean(axis=0)
-        mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
+            feats_np = feats.cpu().numpy()
+            mean_emb = feats_np.mean(axis=0)
+            mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
 
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        np.savez(out_path,
-                 mean_embedding=mean_emb,       # [512]
-                 frame_embeddings=feats_np,     # [N, 512]
-                 video_path=np.array([video_path]))
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            np.savez(out_path,
+                     mean_embedding=mean_emb,
+                     frame_embeddings=feats_np,
+                     video_path=np.array([video_path]))
 
-        elapsed = time.perf_counter() - t0
-        return {"path": video_path, "status": "ok",
-                "n_frames": len(frames), "time_s": elapsed}
+            return {"path": video_path, "status": "ok",
+                    "n_frames": len(frames), "time_s": time.perf_counter() - t0}
 
-    except Exception as e:
-        return {"path": video_path, "status": f"failed: {e}", "n_frames": 0, "time_s": 0.0}
+        except Exception as e:
+            return {"path": video_path, "status": f"failed: {e}",
+                    "n_frames": 0, "time_s": 0.0}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video_dir",         required=True)
-    ap.add_argument("--out_dir",           default="data/embeddings")
-    ap.add_argument("--frames_per_video",  type=int, default=8)
-    ap.add_argument("--num_gpus",          type=int, default=1,
-                    help="Number of GPUs available. Ray will spread tasks across them.")
-    ap.add_argument("--ray_address",       default=None)
+    ap.add_argument("--video_dir",        required=True)
+    ap.add_argument("--out_dir",          default="data/embeddings")
+    ap.add_argument("--frames_per_video", type=int, default=8)
+    ap.add_argument("--num_gpus",         type=int, default=1)
+    ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
     video_dir = Path(args.video_dir)
     videos    = sorted(video_dir.rglob("*.mp4"))
+    n_actors  = args.num_gpus * ACTORS_PER_GPU
     print(f"Found {len(videos)} videos in {video_dir}")
-    # 0.25 GPU per task → 4 tasks/GPU × num_gpus concurrent tasks total
-    print(f"Concurrency: {args.num_gpus * 4} tasks across {args.num_gpus} GPU(s)")
+    print(f"Actors: {n_actors} ({ACTORS_PER_GPU} per GPU × {args.num_gpus} GPUs)")
 
     wandb.init(project="video-curation", entity="rlx-labs",
                name="embed", resume="allow", id="embed-stage")
 
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
+    workers = [EmbedWorker.remote() for _ in range(n_actors)]
+
+    # Round-robin dispatch
     futures = [
-        embed_video.remote(str(v), args.out_dir, args.frames_per_video)
-        for v in videos
+        workers[i % n_actors].process.remote(str(v), args.out_dir, args.frames_per_video)
+        for i, v in enumerate(videos)
     ]
 
     ok = failed = cached = 0
-    total = len(videos)
+    total   = len(videos)
     pending = list(futures)
-    t0 = time.perf_counter()
+    t0      = time.perf_counter()
 
     while pending:
         done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
@@ -142,7 +134,7 @@ def main():
             elif s == "cached": cached += 1
             else:               failed += 1
         completed = ok + failed + cached
-        elapsed = time.perf_counter() - t0
+        elapsed   = time.perf_counter() - t0
         print(f"  [{completed}/{total}]  ok={ok}  cached={cached}  "
               f"failed={failed}  elapsed={elapsed:.1f}s")
         wandb.log({"embed/ok": ok, "embed/failed": failed, "embed/cached": cached,
