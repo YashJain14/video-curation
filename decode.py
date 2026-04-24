@@ -78,13 +78,16 @@ def decode_video(video_path: str, max_frames: int = 512,
                  batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float, str]:
     """
     Decode video, preferring GPU. Returns (batches, decode_time_s, backend_used).
+    Falls back to CPU only if PyNvVideoCodec is not importable (not installed).
     """
     try:
-        batches, t = decode_gpu(video_path, max_frames, batch_size, device)
-        return batches, t, "pynvvideocodec"
-    except Exception:
+        import PyNvVideoCodec  # noqa: F401 — probe import only
+    except ImportError:
         batches, t = decode_cpu(video_path, max_frames, batch_size)
         return batches, t, "opencv_cpu"
+
+    batches, t = decode_gpu(video_path, max_frames, batch_size, device)
+    return batches, t, "pynvvideocodec"
 
 
 if __name__ == "__main__":

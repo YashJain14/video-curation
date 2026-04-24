@@ -83,7 +83,7 @@ class EmbedWorker:
             np.savez(out_path,
                      mean_embedding=mean_emb,
                      frame_embeddings=feats_np,
-                     video_path=np.array([video_path]))
+                     video_path=np.array([video_path], dtype=str))
 
             return {"path": video_path, "status": "ok",
                     "n_frames": len(frames), "time_s": time.perf_counter() - t0}

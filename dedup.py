@@ -72,7 +72,7 @@ def load_embeddings(emb_dir: Path) -> tuple[list[str], np.ndarray]:
     video_paths = []
     vectors     = []
     for p in paths:
-        data = np.load(p, allow_pickle=True)
+        data = np.load(p)
         video_paths.append(str(data["video_path"][0]))
         vectors.append(data["mean_embedding"].astype(np.float32))
 

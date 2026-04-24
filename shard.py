@@ -50,8 +50,14 @@ def load_embedding(emb_dir: Path, video_path: str) -> list | None:
     npz  = emb_dir / f"{stem}.npz"
     if not npz.exists():
         return None
-    data = np.load(npz, allow_pickle=True)
+    data = np.load(npz)
     return data["mean_embedding"].tolist()
+
+
+def _add_bytes(tar: tarfile.TarFile, name: str, data: bytes):
+    info      = tarfile.TarInfo(name=name)
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
 
 
 def write_shards(videos: list[str], captions: dict, scores: dict,
@@ -62,14 +68,13 @@ def write_shards(videos: list[str], captions: dict, scores: dict,
     Returns list of written shard paths.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    shard_paths = []
-    current_tar = None
+    shard_paths  = []
+    current_tar  = None
     current_path = None
-    shard_idx  = 0
-    sample_idx = 0
+    shard_idx    = 0
+    sample_idx   = 0
 
     for video_path in videos:
-        # Filter by aesthetic score
         score_info = scores.get(video_path, {})
         mean_score = score_info.get("mean_score", 0.0)
         if mean_score < min_score:
@@ -79,8 +84,7 @@ def write_shards(videos: list[str], captions: dict, scores: dict,
         caption     = captions.get(video_path, {}).get("caption", "")
         embedding   = load_embedding(emb_dir, video_path)
         label       = Path(video_path).parent.name
-
-        key = f"{shard_idx:05d}_{sample_idx % shard_size:04d}"
+        key         = f"{shard_idx:05d}_{sample_idx % shard_size:04d}"
 
         metadata = {
             "video_path":      video_path,
@@ -89,23 +93,17 @@ def write_shards(videos: list[str], captions: dict, scores: dict,
             "clip_embedding":  embedding,
         }
 
-        # Open new shard if needed
-        if current_tar is None or sample_idx % shard_size == 0 and sample_idx > 0:
+        if current_tar is None or (sample_idx % shard_size == 0 and sample_idx > 0):
             if current_tar is not None:
                 current_tar.close()
                 shard_paths.append(current_path)
-            shard_idx   = sample_idx // shard_size
+            shard_idx    = sample_idx // shard_size
             current_path = str(out_dir / f"shard_{shard_idx:05d}.tar")
             current_tar  = tarfile.open(current_path, "w")
 
-        def add_bytes(name, data: bytes):
-            info        = tarfile.TarInfo(name=name)
-            info.size   = len(data)
-            current_tar.addfile(info, io.BytesIO(data))
-
-        add_bytes(f"{key}.mp4",  video_bytes)
-        add_bytes(f"{key}.txt",  caption.encode())
-        add_bytes(f"{key}.json", json.dumps(metadata).encode())
+        _add_bytes(current_tar, f"{key}.mp4",  video_bytes)
+        _add_bytes(current_tar, f"{key}.txt",  caption.encode())
+        _add_bytes(current_tar, f"{key}.json", json.dumps(metadata).encode())
 
         sample_idx += 1
 

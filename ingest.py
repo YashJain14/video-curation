@@ -91,8 +91,7 @@ def download_and_extract(tar_url: str, out_dir: Path,
     done_marker = out_dir / f".{part_name}.done"
 
     if done_marker.exists():
-        n = sum(1 for _ in out_dir.rglob("*.mp4"))
-        return {"url": tar_url, "status": "cached", "n_clips": n}
+        return {"url": tar_url, "status": "cached", "n_clips": 0}
 
     tmp_path = None
     t0 = time.perf_counter()
