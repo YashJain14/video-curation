@@ -65,46 +65,65 @@ def fetch_path_list(split: str) -> list[str]:
 def download_and_extract(tar_url: str, out_dir: Path) -> dict:
     """
     Download one tar.gz from S3 and extract its MP4s into out_dir/<label>/.
-    Each tar is named like: <label>.tar.gz and contains ~50 clips.
+
+    K400 tar layout: each part_N.tar.gz contains clips from multiple classes.
+    Each clip is at <label>/<clip_id>.mp4 inside the tar.
+    We preserve the label subdirectory from inside the tar.
+
     Returns {"url": ..., "status": "ok"|"failed"|"cached", "n_clips": int}
     """
-    # Derive label from filename: "playing_guitar.tar.gz" → "playing_guitar"
-    label    = Path(tar_url).stem.replace(".tar", "")
-    label_dir = out_dir / label
+    part_name  = Path(tar_url).stem.replace(".tar", "")   # e.g. "part_0"
+    done_marker = out_dir / f".{part_name}.done"
 
-    # Skip if already extracted (check for at least one mp4)
-    if label_dir.exists() and any(label_dir.glob("*.mp4")):
-        n = len(list(label_dir.glob("*.mp4")))
-        return {"url": tar_url, "status": "cached", "n_clips": n, "label": label}
+    # Skip if already extracted
+    if done_marker.exists():
+        n = sum(1 for _ in out_dir.rglob("*.mp4"))
+        return {"url": tar_url, "status": "cached", "n_clips": n, "label": part_name}
 
+    tmp_path = None
     t0 = time.perf_counter()
     try:
-        label_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stream download into a temp file to avoid loading full tar into memory
+        # Stream download into a temp file
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
             tmp_path = tmp.name
-            r = requests.get(tar_url, stream=True, timeout=120)
+            r = requests.get(tar_url, stream=True, timeout=300)
             r.raise_for_status()
             for chunk in r.iter_content(chunk_size=1 << 20):  # 1 MB chunks
                 tmp.write(chunk)
 
-        # Extract only .mp4 files
+        # Extract — preserve label subdirectory structure: <label>/<clip>.mp4
+        n_clips = 0
         with tarfile.open(tmp_path, "r:gz") as tf:
-            mp4_members = [m for m in tf.getmembers() if m.name.endswith(".mp4")]
-            for m in mp4_members:
-                m.name = Path(m.name).name  # strip subdirectory prefix
-                tf.extract(m, path=label_dir)
+            for m in tf.getmembers():
+                if not m.name.endswith(".mp4"):
+                    continue
+                parts = Path(m.name).parts
+                # Expected: <label>/<clip_id>.mp4  (2 parts)
+                # Fallback: flat <clip_id>.mp4     (1 part)
+                if len(parts) >= 2:
+                    label    = parts[-2]
+                    clip_name = parts[-1]
+                else:
+                    label    = "unknown"
+                    clip_name = parts[-1]
 
-        n_clips = len(list(label_dir.glob("*.mp4")))
+                dest = out_dir / label
+                dest.mkdir(parents=True, exist_ok=True)
+                m.name = clip_name   # extract flat into dest
+                tf.extract(m, path=dest)
+                n_clips += 1
+
+        done_marker.touch()
         elapsed = time.perf_counter() - t0
         return {"url": tar_url, "status": "ok",
-                "n_clips": n_clips, "label": label, "time_s": elapsed}
+                "n_clips": n_clips, "label": part_name, "time_s": elapsed}
 
     except Exception as e:
-        return {"url": tar_url, "status": f"failed: {e}", "n_clips": 0, "label": label}
+        return {"url": tar_url, "status": f"failed: {e}", "n_clips": 0, "label": part_name}
     finally:
-        if os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
 
