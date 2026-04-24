@@ -1,32 +1,63 @@
 """
 dedup.py
 --------
-Near-duplicate detection over a set of video CLIP embeddings.
-Uses FAISS IndexFlatIP (exact cosine similarity on L2-normalised vectors).
+Two-stage deduplication: exact → near.
 
-Strategy:
-  - Load all mean embeddings from data/embeddings/*.npz
-  - Build a FAISS index
-  - For each video, find all neighbours with cosine similarity > threshold
-  - Keep one representative per duplicate cluster (highest-norm embedding wins)
-  - Write kept/removed lists to data/dedup_results.json
+Stage 1 — Exact dedup (MD5 hash):
+  - Hash every video file byte-for-byte
+  - Remove identical files immediately (same bytes = same video)
+  - Fast: O(N) single pass, no GPU needed
+
+Stage 2 — Near-dedup (CLIP embeddings + FAISS):
+  - Load mean CLIP embeddings from data/embeddings/*.npz
+  - Build FAISS IndexFlatIP (cosine similarity on L2-normalised vectors)
+  - Union-Find clustering of videos with cosine sim > threshold
+  - Keep one representative per cluster
+
+Why two stages:
+  - Exact dedup catches re-uploads and exact copies cheaply
+  - Near-dedup catches re-encoded, cropped, or slightly edited duplicates
+  - Running exact first reduces N before the O(N²) FAISS search
 
 Why FAISS IndexFlatIP:
-  - Embeddings are L2-normalised → inner product == cosine similarity
-  - IndexFlatIP is exact (no approximation error) and fast enough for <100k videos
-  - For >1M videos, swap to IndexIVFFlat with nlist=1024 for approximate search
+  - L2-normalised embeddings → inner product == cosine similarity
+  - Exact search, fast enough for <100k videos
+  - For >1M videos, swap to IndexIVFFlat with nlist=1024
 
 Usage:
-  python dedup.py --emb_dir data/embeddings --threshold 0.95
+  python dedup.py --video_dir data/raw_videos --emb_dir data/embeddings --threshold 0.95
 """
 
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
 
 import numpy as np
 import faiss
+
+
+def exact_dedup(video_paths: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Stage 1: MD5-based exact deduplication.
+    Hashes every file; keeps first occurrence of each hash.
+    Returns (kept, removed).
+    """
+    seen   = {}
+    kept   = []
+    removed = []
+    for path in video_paths:
+        p = Path(path)
+        if not p.exists():
+            continue
+        md5 = hashlib.md5(p.read_bytes()).hexdigest()
+        if md5 in seen:
+            removed.append(path)
+        else:
+            seen[md5] = path
+            kept.append(path)
+    return kept, removed
 
 
 def load_embeddings(emb_dir: Path) -> tuple[list[str], np.ndarray]:
@@ -116,6 +147,8 @@ def find_duplicates(video_paths: list[str], embeddings: np.ndarray,
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--video_dir", default=None,
+                    help="Video directory for exact dedup. If omitted, skips stage 1.")
     ap.add_argument("--emb_dir",   default="data/embeddings")
     ap.add_argument("--threshold", type=float, default=0.95,
                     help="Cosine similarity threshold for near-duplicate")
@@ -124,7 +157,20 @@ def main():
 
     emb_dir = Path(args.emb_dir)
     t0      = time.perf_counter()
+    exact_removed = []
 
+    # ── Stage 1: Exact dedup ──────────────────────────────────────────────────
+    if args.video_dir:
+        all_videos = [str(p) for p in Path(args.video_dir).rglob("*.mp4")]
+        print(f"Stage 1 — Exact dedup (MD5) over {len(all_videos)} videos ...")
+        after_exact, exact_removed = exact_dedup(all_videos)
+        print(f"  Exact duplicates removed : {len(exact_removed)}")
+        print(f"  Remaining                : {len(after_exact)}")
+    else:
+        print("Stage 1 — Exact dedup skipped (no --video_dir provided)")
+
+    # ── Stage 2: Near-dedup (FAISS) ───────────────────────────────────────────
+    print(f"\nStage 2 — Near-dedup (FAISS cosine sim > {args.threshold}) ...")
     print(f"Loading embeddings from {emb_dir} ...")
     video_paths, embeddings = load_embeddings(emb_dir)
     print(f"  Loaded {len(video_paths)} videos  dim={embeddings.shape[1]}")
@@ -132,22 +178,28 @@ def main():
     print("Building FAISS index ...")
     index = build_index(embeddings)
 
-    print(f"Finding duplicates (threshold={args.threshold}) ...")
-    kept, removed = find_duplicates(video_paths, embeddings, index, args.threshold)
+    print(f"Finding near-duplicates ...")
+    kept, near_removed = find_duplicates(video_paths, embeddings, index, args.threshold)
 
     elapsed = time.perf_counter() - t0
+    total   = len(video_paths)
     print(f"\nResults:")
-    print(f"  Total   : {len(video_paths)}")
-    print(f"  Kept    : {len(kept)}")
-    print(f"  Removed : {len(removed)}  ({100*len(removed)/len(video_paths):.1f}% duplicates)")
-    print(f"  Time    : {elapsed:.2f}s")
+    print(f"  Input (to near-dedup) : {total}")
+    print(f"  Exact removed         : {len(exact_removed)}")
+    print(f"  Near removed          : {len(near_removed)}  ({100*len(near_removed)/max(total,1):.1f}%)")
+    print(f"  Final kept            : {len(kept)}")
+    print(f"  Time                  : {elapsed:.2f}s")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
-        json.dump({"kept": kept, "removed": removed,
-                   "threshold": args.threshold,
-                   "total": len(video_paths)}, f, indent=2)
+        json.dump({
+            "kept":          kept,
+            "removed":       near_removed,
+            "exact_removed": exact_removed,
+            "threshold":     args.threshold,
+            "total":         total,
+        }, f, indent=2)
     print(f"\nResults saved → {out}")
 
 

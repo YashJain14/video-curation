@@ -81,6 +81,7 @@ def task_embed(frames_per_video: int, num_gpus: int):
 def task_dedup(threshold: float):
     _run([
         sys.executable, "dedup.py",
+        "--video_dir", str(RAW_VIDEOS),
         "--emb_dir",   str(EMB_DIR),
         "--threshold", str(threshold),
         "--out",       str(DATA_DIR / "dedup_results.json"),
