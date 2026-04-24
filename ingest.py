@@ -154,7 +154,7 @@ def main():
                     help="Parallel download threads")
     args = ap.parse_args()
 
-    scratch  = os.environ.get("SCRATCH_DIR", "data")
+    scratch  = os.environ.get("SCRATCH_DIR") or os.path.expanduser("~/scratch/video-curation")
     out_dir  = Path(args.out_dir) if args.out_dir else Path(scratch) / "raw_videos"
     out_dir.mkdir(parents=True, exist_ok=True)
 
