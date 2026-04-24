@@ -40,5 +40,17 @@ pip install prefect
 # Kinetics downloader
 pip install yt-dlp
 
+# HTTP downloads (ingest)
+pip install requests
+
+# Ray distributed
+pip install "ray[default]"
+
+# Profiling: torchscope (local checkout, not on PyPI)
+# Clone your torchscope repo and install as editable:
+#   git clone https://github.com/YashJain14/torchscope.git ~/torchscope
+#   pip install -e ~/torchscope
+# Then pass --torchscope ~/torchscope when running profile_run.py
+
 echo ""
 echo "Setup complete. Submit with: qsub run_curation.pbs"
