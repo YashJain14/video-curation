@@ -23,8 +23,13 @@ echo "GPUs:    $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)
 echo "Python:  $(python --version 2>&1)"
 echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", torch.cuda.device_count())')"
 
+# ── Scratch storage ───────────────────────────────────────────────────────────
+export SCRATCH_DIR="$HOME/scratch/video-curation"
+mkdir -p "$SCRATCH_DIR"
+echo "Scratch: $SCRATCH_DIR"
+
 # ── Config ────────────────────────────────────────────────────────────────────
-CSV="data/kinetics400_val.csv"
+CSV="$SCRATCH_DIR/kinetics400_val.csv"
 VERSION="v1"
 LIMIT=500               # number of clips to download
 FRAMES=8                # frames sampled per video for CLIP / scoring
@@ -40,7 +45,7 @@ SHARD_SIZE=200          # samples per WebDataset shard
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 python dag.py \
-    --csv              $CSV \
+    --csv              "$CSV" \
     --version          $VERSION \
     --limit            $LIMIT \
     --frames_per_video $FRAMES \

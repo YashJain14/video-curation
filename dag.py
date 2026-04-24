@@ -27,6 +27,7 @@ Usage:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,10 +37,11 @@ from prefect.tasks import task_input_hash
 from datetime import timedelta
 
 
-DATA_DIR   = Path("data")
-RAW_VIDEOS = DATA_DIR / "raw_videos"
-EMB_DIR    = DATA_DIR / "embeddings"
-SHARDS_DIR = DATA_DIR / "shards"
+SCRATCH      = Path(os.environ.get("SCRATCH_DIR", "data"))
+DATA_DIR     = SCRATCH
+RAW_VIDEOS   = DATA_DIR / "raw_videos"
+EMB_DIR      = DATA_DIR / "embeddings"
+SHARDS_DIR   = DATA_DIR / "shards"
 MANIFEST_DIR = DATA_DIR / "manifests"
 
 STAGES = ["ingest", "embed", "dedup", "score", "caption", "shard", "manifest"]

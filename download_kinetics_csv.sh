@@ -2,8 +2,9 @@
 # Download the official Kinetics-400 validation split CSV from DeepMind.
 # Run this on the login node before submitting the PBS job.
 
-mkdir -p data
-CSV="data/kinetics400_val.csv"
+SCRATCH_DIR="${SCRATCH_DIR:-$HOME/scratch/video-curation}"
+mkdir -p "$SCRATCH_DIR"
+CSV="$SCRATCH_DIR/kinetics400_val.csv"
 
 if [ -f "$CSV" ]; then
     echo "Already have $CSV ($(wc -l < $CSV) lines)"
