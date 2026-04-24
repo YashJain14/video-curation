@@ -31,7 +31,7 @@ echo "Scratch: $SCRATCH_DIR"
 # ── Config ────────────────────────────────────────────────────────────────────
 CSV="$SCRATCH_DIR/kinetics400_val.csv"
 VERSION="v1"
-LIMIT=500               # number of clips to download
+LIMIT=10                # number of S3 tar files (~50 clips each → ~500 clips total)
 FRAMES=8                # frames sampled per video for CLIP / scoring
 NUM_GPUS=4              # GPUs available on this node
 MIN_SCORE=4.5           # LAION aesthetic threshold
@@ -45,7 +45,7 @@ SHARD_SIZE=200          # samples per WebDataset shard
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 python dag.py \
-    --csv              "$CSV" \
+    --split            val \
     --version          $VERSION \
     --limit            $LIMIT \
     --frames_per_video $FRAMES \

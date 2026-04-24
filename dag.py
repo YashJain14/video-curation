@@ -56,10 +56,10 @@ def _run(cmd: list[str], stage: str):
 
 @task(name="ingest", retries=2, retry_delay_seconds=30,
       cache_key_fn=task_input_hash, cache_expiration=timedelta(hours=24))
-def task_ingest(csv: str, limit: int, workers: int):
+def task_ingest(split: str, limit: int, workers: int):
     _run([
         sys.executable, "ingest.py",
-        "--csv",     csv,
+        "--split",   split,
         "--out_dir", str(RAW_VIDEOS),
         "--limit",   str(limit),
         "--workers", str(workers),
@@ -141,9 +141,9 @@ def task_manifest(version: str, min_score: float, dedup_threshold: float):
 
 @flow(name="video-curation-pipeline")
 def curation_pipeline(
-    csv:               str   = "data/kinetics400_val.csv",
+    split:             str   = "val",
     version:           str   = "v1",
-    limit:             int   = 500,
+    limit:             int   = 10,
     workers:           int   = 8,
     frames_per_video:  int   = 8,
     num_gpus:          int   = 1,
@@ -160,7 +160,7 @@ def curation_pipeline(
     stage_idx = STAGES.index(from_stage)
 
     if stage_idx <= STAGES.index("ingest"):
-        task_ingest(csv, limit, workers)
+        task_ingest(split, limit, workers)
 
     if stage_idx <= STAGES.index("embed"):
         task_embed(frames_per_video, num_gpus)
@@ -183,7 +183,7 @@ def curation_pipeline(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv",              default="data/kinetics400_val.csv")
+    ap.add_argument("--split",            default="val", choices=["train", "val", "test"])
     ap.add_argument("--version",          default="v1")
     ap.add_argument("--limit",            type=int,   default=500)
     ap.add_argument("--workers",          type=int,   default=8)
@@ -197,7 +197,7 @@ def main():
     args = ap.parse_args()
 
     curation_pipeline(
-        csv=args.csv,
+        split=args.split,
         version=args.version,
         limit=args.limit,
         workers=args.workers,
