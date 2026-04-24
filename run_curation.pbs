@@ -1,0 +1,45 @@
+#!/bin/bash
+#PBS -N video_curation
+#PBS -l select=1:ncpus=16:ngpus=1:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o curation_output.log
+
+cd $PBS_O_WORKDIR
+
+echo "Starting job on $(hostname) at $(date)"
+
+CONDA_DIR="$HOME/miniconda3"
+source "$CONDA_DIR/etc/profile.d/conda.sh"
+conda activate video_curation_env
+unset PYTHONPATH
+unset PYTHONHOME
+export PATH="$HOME/miniconda3/envs/video_curation_env/bin:$PATH"
+export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+
+echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+echo "Python:  $(python --version 2>&1)"
+echo "PyTorch: $(python -c 'import torch; print(torch.__version__)')"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+CSV="data/kinetics400_val.csv"
+VERSION="v1"
+LIMIT=500               # number of clips to download
+FRAMES=8                # frames sampled per video for CLIP / scoring
+MIN_SCORE=4.5           # LAION aesthetic threshold
+DEDUP_THRESH=0.95       # cosine similarity threshold for near-dedup
+SHARD_SIZE=200          # samples per WebDataset shard
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+python dag.py \
+    --csv             $CSV \
+    --version         $VERSION \
+    --limit           $LIMIT \
+    --frames_per_video $FRAMES \
+    --device          cuda:0 \
+    --dedup_threshold $DEDUP_THRESH \
+    --min_score       $MIN_SCORE \
+    --shard_size      $SHARD_SIZE \
+    --from_stage      ingest
+
+echo "Job completed at $(date)"
