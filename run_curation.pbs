@@ -1,9 +1,11 @@
 #!/bin/bash
 #PBS -N video_curation
-#PBS -l select=1:ncpus=32:ngpus=4:mem=128gb
+#PBS -l select=1:ngpus=4
 #PBS -l walltime=04:00:00
 #PBS -j oe
 #PBS -o curation_output.log
+#PBS -q ai
+#PBS -P 52001004
 
 cd $PBS_O_WORKDIR
 
