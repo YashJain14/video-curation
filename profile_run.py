@@ -7,8 +7,8 @@ Runs embed under torchscope's RayProfiler to measure real GPU utilisation
 across all Ray workers. Proves the 0.25 GPU/task allocation actually loads
 all 4 GPUs efficiently rather than just reserving them.
 
-Setup (run once on cluster after cloning torchscope):
-    pip install -e /path/to/torchscope
+torchscope does NOT need to be pip-installed. Pass --torchscope /path/to/repo
+and the script adds it to sys.path before importing.
 
 Output:
     $SCRATCH_DIR/reports/embed_cluster_profile.html  — per-worker + cluster report
@@ -27,6 +27,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -34,24 +35,28 @@ import torch.nn.functional as F
 import ray
 
 
-def _import_torchscope(ts_path: str = None):
+def _add_torchscope_path(ts_path: str):
+    """Insert torchscope repo root into sys.path if not already there."""
+    if ts_path and ts_path not in sys.path:
+        sys.path.insert(0, ts_path)
+
+
+def _import_torchscope(ts_path: str = ""):
     """
-    Import torchscope from an editable install or a local path.
-    Returns (Profiler, RayProfiler, worker_profiler_context) or None if unavailable.
+    Import torchscope from local repo path (no pip install needed).
+    Returns (Profiler, RayProfiler, worker_profiler_context) or None.
     """
-    if ts_path:
-        sys.path.insert(0, str(ts_path))
+    _add_torchscope_path(ts_path)
     try:
         from torchscope import Profiler
         from torchscope.ray_profiler import RayProfiler, worker_profiler_context
         return Profiler, RayProfiler, worker_profiler_context
     except ImportError as e:
-        print(f"torchscope not available: {e}")
-        print("Install with: pip install -e /path/to/torchscope")
+        print(f"[profile_run] torchscope not available: {e}")
         return None
 
 
-# ── embed logic (duplicated here to avoid Ray serialisation of module refs) ───
+# ── embed helpers (duplicated to avoid serialising module-level imports) ───────
 
 def _load_clip(device):
     from transformers import CLIPProcessor, CLIPModel
@@ -78,45 +83,67 @@ def _sample_frames(batches, n, is_gpu):
 # ── Ray task ──────────────────────────────────────────────────────────────────
 
 @ray.remote(num_gpus=0.25)
-def embed_video_profiled(video_path: str, out_dir: str,
-                         frames_per_video: int,
-                         rp,            # RayProfiler instance (or None)
-                         worker_id: int,
-                         ts_path: str) -> dict:
+def embed_video_profiled(
+    video_path:       str,
+    out_dir:          str,
+    frames_per_video: int,
+    worker_id:        int,
+    ts_path:          str,       # path to torchscope repo (empty string = disabled)
+    actor_name:       str,       # name of the _AggregatorActor (empty = disabled)
+) -> dict:
     """
     Embed one video, wrapped in torchscope worker profiling.
-    rp is the RayProfiler driver handle; each task pushes its GPU summary back.
-    """
-    # Import torchscope inside the task (Ray workers are fresh processes)
-    ts = _import_torchscope(ts_path)
 
-    device   = "cuda:0"
+    torchscope integration:
+      - ts_path  : added to sys.path inside the worker (Ray workers are fresh processes)
+      - actor_name: the aggregator actor is retrieved by name (actor handles can't be
+                    pickled, so we resolve it here via ray.get_actor)
+    """
+    _add_torchscope_path(ts_path)
+
+    device   = "cuda:0"   # Ray sets CUDA_VISIBLE_DEVICES per task
     out_path = Path(out_dir) / (Path(video_path).stem + ".npz")
     if out_path.exists():
         return {"path": video_path, "status": "cached"}
 
-    # Set up context manager: torchscope if available, else plain nullcontext
-    if ts and rp is not None:
-        _, _, worker_profiler_context = ts
-        ctx = worker_profiler_context(rp, worker_id=worker_id, device=0)
-    else:
-        from contextlib import nullcontext
-        ctx = nullcontext()
+    # Build profiling context if torchscope is available
+    ctx = nullcontext()
+    if ts_path and actor_name:
+        try:
+            from torchscope.ray_profiler import RayProfiler, worker_profiler_context
+
+            # Reconstruct a minimal RayProfiler that points at the named actor.
+            # We don't call RayProfiler() (which would create a new actor);
+            # instead we attach to the already-running one via ray.get_actor.
+            rp = RayProfiler.__new__(RayProfiler)
+            rp._num_workers     = 1
+            rp._interval        = 0.5
+            rp._report_interval = 10.0
+            rp._enabled         = True
+            rp._actor_handle    = ray.get_actor(actor_name)
+
+            ctx = worker_profiler_context(rp, worker_id=worker_id, device=0)
+        except Exception as e:
+            # Profiling is best-effort — never let it kill an embed task
+            print(f"[worker {worker_id}] torchscope init failed: {e}")
+            ctx = nullcontext()
 
     t0 = time.perf_counter()
     try:
         from decode import decode_video
         with ctx:
-            batches, _, backend = decode_video(video_path, max_frames=64,
-                                               batch_size=16, device=device)
+            batches, _, backend = decode_video(
+                video_path, max_frames=64, batch_size=16, device=device
+            )
             is_gpu = backend != "opencv_cpu"
             frames = _sample_frames(batches, frames_per_video, is_gpu)
             if not frames:
                 return {"path": video_path, "status": "failed: no frames"}
 
             model, processor = _load_clip(device)
-            inputs = processor(images=frames, return_tensors="pt",
-                               padding=True).to(device)
+            inputs = processor(
+                images=frames, return_tensors="pt", padding=True
+            ).to(device)
             with torch.no_grad():
                 feats = model.get_image_features(**inputs)
                 feats = F.normalize(feats, dim=-1)
@@ -126,10 +153,12 @@ def embed_video_profiled(video_path: str, out_dir: str,
         mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
 
         Path(out_dir).mkdir(parents=True, exist_ok=True)
-        np.savez(out_path,
-                 mean_embedding=mean_emb,
-                 frame_embeddings=feats_np,
-                 video_path=np.array([video_path]))
+        np.savez(
+            out_path,
+            mean_embedding=mean_emb,
+            frame_embeddings=feats_np,
+            video_path=np.array([video_path]),
+        )
 
         return {"path": video_path, "status": "ok",
                 "time_s": time.perf_counter() - t0}
@@ -148,8 +177,8 @@ def main():
     ap.add_argument("--frames_per_video", type=int, default=8)
     ap.add_argument("--num_gpus",         type=int, default=1)
     ap.add_argument("--torchscope",       default=None,
-                    help="Path to torchscope repo, e.g. ~/torchscope. "
-                         "Not needed if already installed with pip install -e.")
+                    help="Path to torchscope repo root. "
+                         "No pip install needed — just pass the directory.")
     args = ap.parse_args()
 
     scratch    = Path(os.environ.get("SCRATCH_DIR") or
@@ -159,7 +188,7 @@ def main():
     report_dir.mkdir(parents=True, exist_ok=True)
     ts_path    = str(Path(args.torchscope).expanduser()) if args.torchscope else ""
 
-    ts = _import_torchscope(ts_path or None)
+    ts = _import_torchscope(ts_path)
 
     videos = sorted(Path(args.video_dir).rglob("*.mp4"))
     if not videos:
@@ -169,16 +198,32 @@ def main():
     concurrency = args.num_gpus * 4
     print(f"Videos      : {len(videos)}")
     print(f"GPUs        : {args.num_gpus}  (0.25/task → {concurrency} concurrent)")
-    print(f"Torchscope  : {'enabled' if ts else 'disabled (no profiling)'}")
+    print(f"Torchscope  : {'enabled  path=' + ts_path if ts else 'disabled'}")
 
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
-    # Driver-side objects
+    # ── torchscope setup ──────────────────────────────────────────────────────
     rp          = None
+    actor_name  = ""
     driver_prof = None
+
     if ts:
         Profiler, RayProfiler, _ = ts
+
+        # Create aggregator actor with a fixed name so workers can find it.
+        # We reach into RayProfiler to pre-create the named actor before
+        # dispatching tasks — workers call ray.get_actor(actor_name) instead
+        # of receiving an un-picklable handle.
+        ACTOR_NAME = "torchscope_aggregator"
+        from torchscope.ray_profiler import _AggregatorActor
+        named_actor = _AggregatorActor.options(
+            name=ACTOR_NAME, lifetime="detached"
+        ).remote(concurrency)
+
         rp = RayProfiler(num_workers=concurrency)
+        rp._actor_handle = named_actor   # point driver's RayProfiler at named actor
+        actor_name = ACTOR_NAME
+
         driver_prof = Profiler(
             interval    = 0.5,
             gpu_ids     = list(range(args.num_gpus)),
@@ -187,11 +232,12 @@ def main():
         )
         driver_prof.start()
 
+    # ── dispatch tasks ────────────────────────────────────────────────────────
     t0 = time.perf_counter()
     futures = [
         embed_video_profiled.remote(
             str(v), str(out_dir), args.frames_per_video,
-            rp, i % concurrency, ts_path
+            i % concurrency, ts_path, actor_name,
         )
         for i, v in enumerate(videos)
     ]
@@ -210,7 +256,7 @@ def main():
     print(f"\nDone: {len(videos)} videos in {elapsed:.1f}s  "
           f"({len(videos)/elapsed:.1f} videos/s)")
 
-    # ── reports ───────────────────────────────────────────────────────────────
+    # ── generate reports ──────────────────────────────────────────────────────
     if ts and rp:
         print("\nGenerating cluster report ...")
         analysis = rp.aggregate_report(
@@ -219,10 +265,10 @@ def main():
         )
         cs = analysis.get("_cluster_stats", {})
         if cs:
-            print(f"  Avg GPU util     : {cs.get('cluster_avg_gpu_util','?')}%")
-            print(f"  Bottleneck worker: {cs.get('bottleneck_worker_id','?')}  "
-                  f"({cs.get('bottleneck_avg_util','?')}%)")
-            print(f"  Imbalance        : {cs.get('imbalance_pct','?')}%")
+            print(f"  Avg GPU util     : {cs.get('cluster_avg_gpu_util', '?')}%")
+            print(f"  Bottleneck worker: {cs.get('bottleneck_worker_id', '?')}  "
+                  f"({cs.get('bottleneck_avg_util', '?')}%)")
+            print(f"  Imbalance        : {cs.get('imbalance_pct', '?')}%")
 
     if ts and driver_prof:
         driver_prof.report(
@@ -230,14 +276,21 @@ def main():
             title         = "Video Curation — Driver GPU Profile",
             custom_stages = {"embed_per_video": elapsed / max(len(videos), 1)},
             metadata      = {
-                "videos":       len(videos),
-                "num_gpus":     args.num_gpus,
-                "concurrency":  concurrency,
-                "throughput":   f"{len(videos)/elapsed:.1f} videos/s",
-                "ok/failed":    f"{ok}/{failed}",
+                "videos":      len(videos),
+                "num_gpus":    args.num_gpus,
+                "concurrency": concurrency,
+                "throughput":  f"{len(videos)/elapsed:.1f} videos/s",
+                "ok/failed":   f"{ok}/{failed}",
             },
         )
         print(f"Reports → {report_dir}/")
+
+    # Kill the detached actor so it doesn't persist between runs
+    if actor_name:
+        try:
+            ray.kill(ray.get_actor(actor_name))
+        except Exception:
+            pass
 
     ray.shutdown()
 
