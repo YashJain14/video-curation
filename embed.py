@@ -127,17 +127,25 @@ def main():
     pending = list(futures)
     t0      = time.perf_counter()
 
+    first_errors: list[str] = []
     while pending:
         done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
         for fut in ray.get(done):
             s = fut["status"]
             if   s == "ok":     ok     += 1
             elif s == "cached": cached += 1
-            else:               failed += 1
+            else:
+                failed += 1
+                if len(first_errors) < 5:
+                    first_errors.append(f"{Path(fut['path']).name}: {s}")
         completed = ok + failed + cached
         elapsed   = time.perf_counter() - t0
         print(f"  [{completed}/{total}]  ok={ok}  cached={cached}  "
               f"failed={failed}  elapsed={elapsed:.1f}s")
+        if first_errors:
+            for msg in first_errors:
+                print(f"    ERROR: {msg}")
+            first_errors.clear()
         wandb.log({"embed/ok": ok, "embed/failed": failed, "embed/cached": cached,
                    "embed/completed": completed, "embed/total": total,
                    "embed/elapsed_s": elapsed})
