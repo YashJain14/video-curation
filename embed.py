@@ -25,7 +25,7 @@ import ray
 import wandb
 from transformers import CLIPProcessor, CLIPModel
 
-from decode import decode_video
+from decode import decode_video_actor
 
 
 MODEL_ID = "openai/clip-vit-base-patch32"
@@ -62,8 +62,8 @@ class EmbedWorker:
 
         t0 = time.perf_counter()
         try:
-            batches, _, backend = decode_video(video_path, max_frames=64,
-                                               batch_size=16, device=self.device)
+            batches, _, backend = decode_video_actor(video_path, max_frames=64,
+                                                       batch_size=16, device=self.device)
             is_gpu = backend != "opencv_cpu"
             frames = _sample_frames(batches, frames_per_video, is_gpu)
             if not frames:

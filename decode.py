@@ -1,12 +1,23 @@
 """
 decode.py
 ---------
-GPU-accelerated video decode using PyNvVideoCodec (ThreadedDecoder).
-Reuses the same decode strategy from benchmark.py:
-  - Decode all frames once into GPU tensors
-  - Return as list of [B, H, W, C] uint8 CUDA tensors
+Two GPU decode backends + CPU fallback:
 
-Falls back to OpenCV CPU decode if PyNvVideoCodec is unavailable.
+  decode_video()       — ThreadedDecoder (standalone / profiling use)
+  decode_video_actor() — SimpleDecoder   (Ray actors, fractional GPU sharing)
+
+Why two functions:
+  ThreadedDecoder keeps a background decode thread that holds a CUDA context
+  for its lifetime. When multiple actors share a GPU (num_gpus=0.25, 4 actors
+  per GPU), concurrent ThreadedDecoder instances race on NVDEC contexts and
+  crash with CUDA_ERROR_CONTEXT_IS_DESTROYED.
+
+  SimpleDecoder has no background thread — it decodes synchronously on demand.
+  Safe to run concurrently on a shared GPU. For our use case (sampling 8 frames
+  from a 10s clip) it's also a better fit: we do random seeks, not full sequential
+  decode. Throughput impact is negligible since CLIP inference dominates.
+
+Falls back to PyAV (ffmpeg) then OpenCV if PyNvVideoCodec is unavailable.
 
 Usage (standalone):
   python decode.py --video data/raw_videos/playing_guitar/abc123_000010.mp4
@@ -14,20 +25,17 @@ Usage (standalone):
 
 import argparse
 import time
-from pathlib import Path
 
+import numpy as np
 import torch
 
 
-def decode_gpu(video_path: str, max_frames: int = 512,
-               batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float]:
+def decode_gpu_threaded(video_path: str, max_frames: int = 512,
+                        batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float]:
     """
-    Decode up to max_frames from video_path using PyNvVideoCodec ThreadedDecoder.
-    Returns (batches, decode_time_s) where batches is a list of [B,H,W,C] uint8 GPU tensors.
-
-    The decoder is explicitly deleted before returning so its background C++ threads
-    release the CUDA context immediately. This prevents CUDA_ERROR_CONTEXT_IS_DESTROYED
-    when multiple Ray actors share a GPU (fractional GPU allocation).
+    ThreadedDecoder — fast sequential decode, standalone use only.
+    NOT safe for concurrent use on a shared GPU (Ray fractional actors).
+    Returns (batches, decode_time_s) — batches: list of [B,H,W,C] uint8 GPU tensors.
     """
     from PyNvVideoCodec import ThreadedDecoder, OutputColorType
 
@@ -37,29 +45,77 @@ def decode_gpu(video_path: str, max_frames: int = 512,
     dec   = ThreadedDecoder(video_path, max_frames * 2, gpu_id=0,
                             output_color_type=OutputColorType.RGB)
     all_f = dec.get_batch_frames(max_frames)
-    # Copy frames to CPU numpy before deleting the decoder, since the decoder
-    # owns the GPU memory backing those frame objects.
-    frames_np = [f.numpy() if hasattr(f, "numpy") else f for f in all_f]
-    del dec  # force C++ destructor now — releases CUDA context before any other actor uses it
+    del dec
 
     batches = []
-    for i in range(0, len(frames_np), batch_size):
-        chunk = frames_np[i : i + batch_size]
+    for i in range(0, len(all_f), batch_size):
+        chunk = all_f[i : i + batch_size]
         batch = torch.stack([
-            torch.as_tensor(f, device=device).clone() for f in chunk
-        ])  # [B, H, W, C] uint8
+            torch.as_tensor(np.array(f), device=device).clone() for f in chunk
+        ])
         batches.append(batch)
 
     torch.cuda.synchronize()
-    elapsed = time.perf_counter() - t0
-    return batches, elapsed
+    return batches, time.perf_counter() - t0
+
+
+def decode_gpu_simple(video_path: str, max_frames: int = 512,
+                      batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float]:
+    """
+    SimpleDecoder — synchronous, no background thread, safe for concurrent use
+    on a shared GPU (Ray fractional actors, num_gpus=0.25).
+    Returns (batches, decode_time_s) — batches: list of [B,H,W,C] uint8 GPU tensors.
+    """
+    from PyNvVideoCodec import SimpleDecoder
+
+    t0 = time.perf_counter()
+    torch.cuda.synchronize()
+
+    dec    = SimpleDecoder(video_path, gpu_id=0)
+    frames = []
+    for frame in dec:
+        frames.append(frame)
+        if len(frames) >= max_frames:
+            break
+    del dec
+
+    batches = []
+    for i in range(0, len(frames), batch_size):
+        chunk = frames[i : i + batch_size]
+        batch = torch.stack([
+            torch.as_tensor(np.array(f), device=device).clone() for f in chunk
+        ])
+        batches.append(batch)
+
+    torch.cuda.synchronize()
+    return batches, time.perf_counter() - t0
+
+
+def decode_pyav(video_path: str, max_frames: int = 512,
+                batch_size: int = 16) -> tuple[list, float]:
+    """
+    CPU decode via PyAV (ffmpeg). Fallback if PyNvVideoCodec is unavailable.
+    Returns (batches, decode_time_s) — batches: list of numpy arrays [B,H,W,C].
+    """
+    import av
+
+    t0 = time.perf_counter()
+    frames = []
+    with av.open(video_path) as container:
+        for frame in container.decode(video=0):
+            if len(frames) >= max_frames:
+                break
+            frames.append(frame.to_ndarray(format="rgb24"))
+
+    batches = [frames[i : i + batch_size] for i in range(0, len(frames), batch_size)]
+    return batches, time.perf_counter() - t0
 
 
 def decode_cpu(video_path: str, max_frames: int = 512,
                batch_size: int = 16) -> tuple[list, float]:
     """
-    Fallback CPU decode using OpenCV.
-    Returns (batches, decode_time_s) where batches is a list of numpy arrays [B,H,W,C].
+    CPU decode via OpenCV. Last-resort fallback.
+    Returns (batches, decode_time_s) — batches: list of numpy arrays [B,H,W,C].
     """
     import cv2
 
@@ -73,28 +129,56 @@ def decode_cpu(video_path: str, max_frames: int = 512,
         frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
     cap.release()
 
-    batches = []
-    for i in range(0, len(frames), batch_size):
-        batches.append(frames[i : i + batch_size])
-
-    elapsed = time.perf_counter() - t0
-    return batches, elapsed
+    batches = [frames[i : i + batch_size] for i in range(0, len(frames), batch_size)]
+    return batches, time.perf_counter() - t0
 
 
 def decode_video(video_path: str, max_frames: int = 512,
                  batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float, str]:
     """
-    Decode video, preferring GPU. Returns (batches, decode_time_s, backend_used).
-    Falls back to CPU only if PyNvVideoCodec is not importable (not installed).
+    Standalone decode — uses ThreadedDecoder for maximum throughput.
+    Returns (batches, decode_time_s, backend_used).
     """
     try:
-        import PyNvVideoCodec  # noqa: F401 — probe import only
+        import PyNvVideoCodec  # noqa: F401
+        batches, t = decode_gpu_threaded(video_path, max_frames, batch_size, device)
+        return batches, t, "pynvvideocodec_threaded"
     except ImportError:
-        batches, t = decode_cpu(video_path, max_frames, batch_size)
-        return batches, t, "opencv_cpu"
+        pass
 
-    batches, t = decode_gpu(video_path, max_frames, batch_size, device)
-    return batches, t, "pynvvideocodec"
+    try:
+        import av  # noqa: F401
+        batches, t = decode_pyav(video_path, max_frames, batch_size)
+        return batches, t, "pyav"
+    except ImportError:
+        pass
+
+    batches, t = decode_cpu(video_path, max_frames, batch_size)
+    return batches, t, "opencv_cpu"
+
+
+def decode_video_actor(video_path: str, max_frames: int = 512,
+                       batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float, str]:
+    """
+    Ray actor decode — uses SimpleDecoder (no background thread, safe for
+    concurrent fractional GPU actors). Returns (batches, decode_time_s, backend_used).
+    """
+    try:
+        import PyNvVideoCodec  # noqa: F401
+        batches, t = decode_gpu_simple(video_path, max_frames, batch_size, device)
+        return batches, t, "pynvvideocodec_simple"
+    except ImportError:
+        pass
+
+    try:
+        import av  # noqa: F401
+        batches, t = decode_pyav(video_path, max_frames, batch_size)
+        return batches, t, "pyav"
+    except ImportError:
+        pass
+
+    batches, t = decode_cpu(video_path, max_frames, batch_size)
+    return batches, t, "opencv_cpu"
 
 
 if __name__ == "__main__":
