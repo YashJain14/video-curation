@@ -39,6 +39,12 @@ Kinetics-400 S3 (CVDF)
 ```bash
 bash setup_env.sh
 
+# Pre-fetch model weights into the HF cache. Compute nodes have no
+# internet (HF_HUB_OFFLINE=1), so this MUST run on the login node.
+# Pulls CLIP ViT-B/32, ViT-L/14, the LAION aesthetic predictor, and
+# Qwen2.5-VL-7B (~16 GB).
+python prefetch_models.py
+
 # Clone torchscope (no pip install needed — used via local path)
 git clone https://github.com/YashJain14/torchscope.git ~/torchscope
 ```

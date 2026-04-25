@@ -25,8 +25,11 @@ echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", to
 
 # ── Scratch storage ───────────────────────────────────────────────────────────
 export WANDB_API_KEY=<your_wandb_api_key>
+# Compute nodes have no internet. Models must be pre-pulled with
+# `python prefetch_models.py` on the login node before qsub.
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
+export HF_HUB_OFFLINE=1
 export SCRATCH_DIR="$HOME/scratch/video-curation"
 mkdir -p "$SCRATCH_DIR"
 echo "Scratch: $SCRATCH_DIR"

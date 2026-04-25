@@ -61,4 +61,8 @@ pip install "ray[default]"
 # Then pass --torchscope ~/torchscope when running profile_run.py
 
 echo ""
-echo "Setup complete. Submit with: qsub run_curation.pbs"
+echo "Setup complete."
+echo "Next: pre-fetch model weights from the login node (compute nodes are offline):"
+echo "  python prefetch_models.py"
+echo "Then submit:"
+echo "  qsub run_curation.pbs"
