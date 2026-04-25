@@ -39,7 +39,7 @@ from decode import decode_video_actor
 
 CLIP_MODEL_ID   = "openai/clip-vit-large-patch14"
 ACTORS_PER_GPU  = 4
-AESTHETIC_REPO  = "shunk031/improved-aesthetic-predictor"
+AESTHETIC_REPO  = "camenduru/improved-aesthetic-predictor"
 AESTHETIC_FILE  = "sac+logos+ava1-l14-linearMSE.pth"
 
 
