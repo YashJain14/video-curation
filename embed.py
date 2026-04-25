@@ -38,7 +38,7 @@ MODEL_ID = "openai/clip-vit-base-patch32"
 ACTORS_PER_GPU = 4
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     stream=sys.stdout,
 )
@@ -62,12 +62,6 @@ def _sample_frames(batches: list, n: int, is_gpu: bool) -> list:
 @ray.remote(num_gpus=1.0 / ACTORS_PER_GPU)
 class EmbedWorker:
     def __init__(self):
-        import logging, sys
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s [%(levelname)s] WORKER %(message)s",
-            stream=sys.stdout,
-        )
         self._log = logging.getLogger("embed.worker")
         self._log.info(f"Worker init  pid={os.getpid()}  CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}")
 
@@ -87,28 +81,22 @@ class EmbedWorker:
 
         t0 = time.perf_counter()
         try:
-            log.debug(f"decode  {Path(video_path).name}")
             batches, decode_t, backend = decode_video_actor(
                 video_path, max_frames=64, batch_size=16, device=self.device
             )
-            total_raw = sum(b.shape[0] if hasattr(b, "shape") else len(b) for b in batches)
-            log.debug(f"decoded backend={backend} total_frames={total_raw} t={decode_t:.3f}s")
 
             is_gpu = "pynvvideocodec" in backend
             frames = _sample_frames(batches, frames_per_video, is_gpu)
-            log.debug(f"sampled {len(frames)} frames")
             if not frames:
                 log.warning(f"no frames: {video_path}")
                 return {"path": video_path, "status": "failed: no frames",
                         "n_frames": 0, "time_s": 0.0}
 
-            log.debug("running CLIP ...")
             inputs = self.processor(images=frames, return_tensors="pt", padding=True).to(self.device)
             with torch.inference_mode():
                 vision_out = self.model.vision_model(pixel_values=inputs["pixel_values"])
                 feats = self.model.visual_projection(vision_out.pooler_output)
                 feats = F.normalize(feats, dim=-1)
-            log.debug(f"CLIP done feats.shape={feats.shape}")
 
             feats_np = feats.cpu().numpy()
             mean_emb = feats_np.mean(axis=0)
@@ -121,7 +109,6 @@ class EmbedWorker:
                      video_path=np.array([video_path], dtype=str))
 
             elapsed = time.perf_counter() - t0
-            log.debug(f"saved {out_path.name}  total_t={elapsed:.2f}s")
             return {"path": video_path, "status": "ok",
                     "n_frames": len(frames), "time_s": elapsed}
 
