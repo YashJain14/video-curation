@@ -140,9 +140,14 @@ def main():
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
-    # Resolve weights path before Ray starts (avoids HF API calls inside workers)
+    # Resolve weights path before Ray starts (avoids HF API calls inside workers).
+    # local_files_only=True forces a cache-only lookup. On the cluster, compute
+    # nodes are offline; the file must have been pre-fetched on the login node
+    # via `python prefetch_models.py`. If you see LocalEntryNotFoundError here,
+    # that's the missing step.
     from huggingface_hub import hf_hub_download
-    weights_path = hf_hub_download(repo_id=AESTHETIC_REPO, filename=AESTHETIC_FILE)
+    weights_path = hf_hub_download(repo_id=AESTHETIC_REPO, filename=AESTHETIC_FILE,
+                                   local_files_only=True)
     print(f"Aesthetic weights: {weights_path}")
 
     videos   = sorted(Path(args.video_dir).rglob("*.mp4"))
