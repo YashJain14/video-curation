@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N video_curation
 #PBS -l select=1:ngpus=4
-#PBS -l walltime=04:00:00
+#PBS -l walltime=02:00:00
 #PBS -j oe
 #PBS -o curation_output.log
 #PBS -q ai
@@ -24,7 +24,7 @@ echo "Python:  $(python --version 2>&1)"
 echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", torch.cuda.device_count())')"
 
 # ── Scratch storage ───────────────────────────────────────────────────────────
-export WANDB_API_KEY=<your_wandb_api_key>
+export WANDB_API_KEY=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
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export SCRATCH_DIR="$HOME/scratch/video-curation"
@@ -56,6 +56,6 @@ python dag.py \
     --dedup_threshold  $DEDUP_THRESH \
     --min_score        $MIN_SCORE \
     --shard_size       $SHARD_SIZE \
-    --from_stage       ingest
+    --from_stage       embed
 
 echo "Job completed at $(date)"
