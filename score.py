@@ -91,7 +91,12 @@ class ScoreWorker:
         aes.eval()
         self.aesthetic = aes
 
-    def process(self, video_path: str, frames_per_video: int) -> dict:
+    def process(self, video_path: str, frames_per_video: int, cache_dir: str) -> dict:
+        cache_path = Path(cache_dir) / (Path(video_path).stem + ".score.json")
+        if cache_path.exists():
+            import json
+            return json.loads(cache_path.read_text())
+
         t0 = time.perf_counter()
         try:
             batches, _, backend = decode_video(video_path, max_frames=64,
@@ -109,13 +114,17 @@ class ScoreWorker:
                 feats      = F.normalize(feats, dim=-1)
                 scores     = self.aesthetic(feats).squeeze(-1).cpu().numpy()
 
-            return {
+            result = {
                 "path":         video_path,
                 "status":       "ok",
                 "mean_score":   float(scores.mean()),
                 "frame_scores": scores.tolist(),
                 "time_s":       time.perf_counter() - t0,
             }
+            import json
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(result))
+            return result
         except Exception as e:
             return {"path": video_path, "status": f"failed: {e}",
                     "mean_score": 0.0, "frame_scores": []}
@@ -148,8 +157,9 @@ def main():
 
     workers = [ScoreWorker.remote(weights_path) for _ in range(n_actors)]
 
+    cache_dir = str(Path(args.out).parent / "score_cache")
     futures = [
-        workers[i % n_actors].process.remote(str(v), args.frames_per_video)
+        workers[i % n_actors].process.remote(str(v), args.frames_per_video, cache_dir)
         for i, v in enumerate(videos)
     ]
 
@@ -163,8 +173,11 @@ def main():
         done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
         for res in ray.get(done):
             results.append(res)
-            if res["status"] == "ok": ok     += 1
-            else:                     failed += 1
+            if res["status"] == "ok":
+                ok += 1
+            else:
+                failed += 1
+                print(f"    ERROR: {Path(res['path']).name}: {res['status']}")
         completed = ok + failed
         elapsed   = time.perf_counter() - t0
         print(f"  [{completed}/{total}]  ok={ok}  failed={failed}  elapsed={elapsed:.1f}s")

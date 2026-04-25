@@ -24,6 +24,10 @@ def decode_gpu(video_path: str, max_frames: int = 512,
     """
     Decode up to max_frames from video_path using PyNvVideoCodec ThreadedDecoder.
     Returns (batches, decode_time_s) where batches is a list of [B,H,W,C] uint8 GPU tensors.
+
+    The decoder is explicitly deleted before returning so its background C++ threads
+    release the CUDA context immediately. This prevents CUDA_ERROR_CONTEXT_IS_DESTROYED
+    when multiple Ray actors share a GPU (fractional GPU allocation).
     """
     from PyNvVideoCodec import ThreadedDecoder, OutputColorType
 
@@ -33,11 +37,14 @@ def decode_gpu(video_path: str, max_frames: int = 512,
     dec   = ThreadedDecoder(video_path, max_frames * 2, gpu_id=0,
                             output_color_type=OutputColorType.RGB)
     all_f = dec.get_batch_frames(max_frames)
-    dec.end()
+    # Copy frames to CPU numpy before deleting the decoder, since the decoder
+    # owns the GPU memory backing those frame objects.
+    frames_np = [f.numpy() if hasattr(f, "numpy") else f for f in all_f]
+    del dec  # force C++ destructor now — releases CUDA context before any other actor uses it
 
     batches = []
-    for i in range(0, len(all_f), batch_size):
-        chunk = all_f[i : i + batch_size]
+    for i in range(0, len(frames_np), batch_size):
+        chunk = frames_np[i : i + batch_size]
         batch = torch.stack([
             torch.as_tensor(f, device=device).clone() for f in chunk
         ])  # [B, H, W, C] uint8

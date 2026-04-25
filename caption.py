@@ -69,8 +69,13 @@ class CaptionWorker:
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(MODEL_ID)
 
-    def process(self, video_path: str, frames_per_video: int) -> dict:
+    def process(self, video_path: str, frames_per_video: int, cache_dir: str) -> dict:
+        import json
         from qwen_vl_utils import process_vision_info
+        cache_path = Path(cache_dir) / (Path(video_path).stem + ".caption.json")
+        if cache_path.exists():
+            return json.loads(cache_path.read_text())
+
         t0 = time.perf_counter()
         try:
             batches, _, backend = decode_video(video_path, max_frames=64,
@@ -99,12 +104,16 @@ class CaptionWorker:
             trimmed = out_ids[:, inputs["input_ids"].shape[1]:]
             caption = self.processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
 
-            return {
+            result = {
                 "path":    video_path,
                 "status":  "ok",
                 "caption": caption,
                 "time_s":  time.perf_counter() - t0,
             }
+            import json
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(result))
+            return result
         except Exception as e:
             return {"path": video_path, "status": f"failed: {e}", "caption": ""}
 
@@ -130,8 +139,9 @@ def main():
 
     workers = [CaptionWorker.remote() for _ in range(args.num_gpus)]
 
+    cache_dir = str(Path(args.out).parent / "caption_cache")
     futures = [
-        workers[i % args.num_gpus].process.remote(str(v), args.frames_per_video)
+        workers[i % args.num_gpus].process.remote(str(v), args.frames_per_video, cache_dir)
         for i, v in enumerate(videos)
     ]
 
@@ -150,6 +160,7 @@ def main():
                 print(f"    {Path(res['path']).name}: {res['caption'][:80]}")
             else:
                 failed += 1
+                print(f"    ERROR: {Path(res['path']).name}: {res['status']}")
         completed = ok + failed
         elapsed   = time.perf_counter() - t0
         print(f"  [{completed}/{total}]  ok={ok}  failed={failed}  elapsed={elapsed:.1f}s")
