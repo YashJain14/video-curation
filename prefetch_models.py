@@ -16,12 +16,13 @@ Usage:
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
-# Mirror the model IDs declared in embed.py / score.py / caption.py / filter.py.
-CLIP_BASE   = "openai/clip-vit-base-patch32"          # embed.py, filter.py
-CLIP_LARGE  = "openai/clip-vit-large-patch14"         # score.py
-AESTHETIC_REPO  = "camenduru/improved-aesthetic-predictor"
-AESTHETIC_FILE  = "sac+logos+ava1-l14-linearMSE.pth"
-QWEN_VL     = "Qwen/Qwen3-VL-8B-Instruct"              # caption.py
+# Mirror the model IDs declared in each pipeline stage.
+CLIP_BASE        = "openai/clip-vit-base-patch32"          # embed.py, caption_quality.py, filter.py
+CLIP_LARGE       = "openai/clip-vit-large-patch14"         # score.py
+AESTHETIC_REPO   = "camenduru/improved-aesthetic-predictor"
+AESTHETIC_FILE   = "sac+logos+ava1-l14-linearMSE.pth"
+QWEN_VL          = "Qwen/Qwen3-VL-8B-Instruct"             # caption.py
+VAE_MODEL        = "stabilityai/sd-vae-ft-mse"             # encode_latents.py (v2)
 
 
 def main():
@@ -36,6 +37,9 @@ def main():
 
     print(f"Prefetching {QWEN_VL} (~16 GB, this is the slow one) ...")
     snapshot_download(repo_id=QWEN_VL)
+
+    print(f"Prefetching {VAE_MODEL} (v2 latent encoding) ...")
+    snapshot_download(repo_id=VAE_MODEL)
 
     print("\nDone. All models are in the HuggingFace cache.")
     print("You can now submit run_curation.pbs from a compute node with HF_HUB_OFFLINE=1.")
