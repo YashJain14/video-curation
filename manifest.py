@@ -112,7 +112,7 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
 
     wandb.init(project="video-curation", entity="rlx-labs",
                name=f"manifest-{version}", resume="allow",
-               id=f"manifest-{version}", config=config)
+               config=config)
     wandb.log({
         "manifest/version":          version,
         "manifest/total_videos":     len(all_videos),
