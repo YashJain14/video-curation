@@ -1,23 +1,23 @@
 """
 decode.py
 ---------
-Two GPU decode backends + CPU fallback:
+Two decode paths:
 
-  decode_video()       — ThreadedDecoder (standalone / profiling use)
-  decode_video_actor() — SimpleDecoder   (Ray actors, fractional GPU sharing)
+  decode_video()       — GPU (ThreadedDecoder/PyNvVideoCodec) for standalone use
+  decode_video_actor() — CPU (PyAV) for Ray actors with fractional GPU sharing
 
-Why two functions:
-  ThreadedDecoder keeps a background decode thread that holds a CUDA context
-  for its lifetime. When multiple actors share a GPU (num_gpus=0.25, 4 actors
-  per GPU), concurrent ThreadedDecoder instances race on NVDEC contexts and
-  crash with CUDA_ERROR_CONTEXT_IS_DESTROYED.
+Why the actor path is CPU:
+  Every PyNvVideoCodec decoder (Threaded or Simple) creates its own CUDA
+  context on the GPU. With num_gpus=0.25 (4 actors per GPU), concurrent
+  decoders race on NVDEC, and DLPack frame pointers become invalid when any
+  actor's context is destroyed → CUDA_ERROR_CONTEXT_IS_DESTROYED. PyAV runs
+  on CPU and returns self-contained numpy frames, so there is no shared GPU
+  state to race on.
 
-  SimpleDecoder has no background thread — it decodes synchronously on demand.
-  Safe to run concurrently on a shared GPU. For our use case (sampling 8 frames
-  from a 10s clip) it's also a better fit: we do random seeks, not full sequential
-  decode. Throughput impact is negligible since CLIP inference dominates.
-
-Falls back to PyAV (ffmpeg) then OpenCV if PyNvVideoCodec is unavailable.
+  The throughput cost is negligible for this pipeline: CLIP inference
+  dominates per-video time (~50–100 ms), CPU decode of 8 sampled frames is
+  a few ms. We keep the GPU decoder path for the standalone profiler, where
+  one process owns the GPU.
 
 Usage (standalone):
   python decode.py --video data/raw_videos/playing_guitar/abc123_000010.mp4
@@ -46,29 +46,27 @@ def decode_gpu_threaded(video_path: str, max_frames: int = 512,
                             output_color_type=OutputColorType.RGB)
     all_f = dec.get_batch_frames(max_frames)
 
-    # Clone immediately after from_dlpack — zero-copy wrap, must clone into
-    # PyTorch-owned memory before deleting the decoder.
-    tensors = [torch.from_dlpack(f).to(device).clone() for f in all_f]
+    # from_dlpack is zero-copy; clone forces an owned copy. Synchronize BEFORE
+    # del dec — the clone is async and the decoder owns the source memory.
+    tensors = [torch.from_dlpack(f).clone() for f in all_f]
+    torch.cuda.synchronize()
     del dec, all_f
 
     batches = []
     for i in range(0, len(tensors), batch_size):
         batches.append(torch.stack(tensors[i : i + batch_size]))
 
-    torch.cuda.synchronize()
     return batches, time.perf_counter() - t0
 
 
 def decode_gpu_simple(video_path: str, max_frames: int = 512,
                       batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float]:
     """
-    SimpleDecoder — synchronous, no background thread, safe for concurrent use
-    on a shared GPU (Ray fractional actors, num_gpus=0.25).
+    SimpleDecoder — synchronous, no background thread.
+    Standalone use only — see decode_video_actor() for the Ray-actor path,
+    which uses PyAV CPU decode to avoid CUDA-context contention on shared GPUs.
     Returns (batches, decode_time_s) — batches: list of [B,H,W,C] uint8 GPU tensors.
     """
-    import logging
-    log = logging.getLogger("decode")
-
     from PyNvVideoCodec import SimpleDecoder
 
     t0 = time.perf_counter()
@@ -81,24 +79,17 @@ def decode_gpu_simple(video_path: str, max_frames: int = 512,
         if len(frames) >= max_frames:
             break
 
-    log.debug(f"SimpleDecoder: {len(frames)} frames  type={type(frames[0]) if frames else 'none'}")
-
-    if frames:
-        f0 = frames[0]
-        log.debug(f"  frame[0] type={type(f0)}  attrs={[a for a in dir(f0) if not a.startswith('_')]}")
-
-    # Clone immediately after from_dlpack — from_dlpack is zero-copy (just wraps
-    # the decoder's GPU pointer). Without .clone(), the tensor still points into
-    # the decoder's memory and goes invalid when dec is deleted or another actor
-    # reuses that GPU buffer, causing illegal memory access.
-    tensors = [torch.from_dlpack(f).to(device).clone() for f in frames]
+    # from_dlpack is zero-copy; clone forces an owned copy. Synchronize BEFORE
+    # del dec — clone is async and the decoder owns the source GPU memory until
+    # the copy actually executes.
+    tensors = [torch.from_dlpack(f).clone() for f in frames]
+    torch.cuda.synchronize()
     del dec, frames
 
     batches = []
     for i in range(0, len(tensors), batch_size):
         batches.append(torch.stack(tensors[i : i + batch_size]))
 
-    torch.cuda.synchronize()
     return batches, time.perf_counter() - t0
 
 
@@ -171,16 +162,21 @@ def decode_video(video_path: str, max_frames: int = 512,
 def decode_video_actor(video_path: str, max_frames: int = 512,
                        batch_size: int = 16, device: str = "cuda:0") -> tuple[list, float, str]:
     """
-    Ray actor decode — uses SimpleDecoder (no background thread, safe for
-    concurrent fractional GPU actors). Returns (batches, decode_time_s, backend_used).
-    """
-    try:
-        import PyNvVideoCodec  # noqa: F401
-        batches, t = decode_gpu_simple(video_path, max_frames, batch_size, device)
-        return batches, t, "pynvvideocodec_simple"
-    except ImportError:
-        pass
+    Ray actor decode — PyAV (CPU) by default.
 
+    Why CPU decode for fractional-GPU actors:
+      With num_gpus=0.25 (4 actors per GPU), every PyNvVideoCodec decoder
+      instance creates its own CUDA context on the shared GPU. Concurrent
+      contexts race on NVDEC, and DLPack frame pointers become invalid when
+      any actor's context is destroyed — surfacing as CUDA_ERROR_CONTEXT_IS_DESTROYED
+      mid-pipeline. PyAV decodes on CPU and hands back self-contained numpy
+      frames, so there is no shared GPU state to race on.
+
+      Throughput cost is negligible: CLIP inference dominates per-video time
+      (~50–100 ms), CPU decode of 8 sampled frames is a few ms.
+
+    Returns (batches, decode_time_s, backend_used).
+    """
     try:
         import av  # noqa: F401
         batches, t = decode_pyav(video_path, max_frames, batch_size)

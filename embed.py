@@ -8,6 +8,8 @@ mean embedding + per-frame embeddings in a .npz file.
 Design:
   - One Ray actor per GPU slot (4 actors × 4 GPUs = 16 actors)
   - Each actor loads CLIP once, then processes all assigned videos
+  - Frames decoded on CPU (PyAV) — see decode.py for why GPU decode in
+    fractional-GPU actors races on CUDA contexts. CLIP runs on GPU.
   - Results written to data/embeddings/<video_stem>.npz
 
 Usage:
