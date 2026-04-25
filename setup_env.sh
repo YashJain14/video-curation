@@ -14,7 +14,9 @@ conda activate $ENV_NAME
 
 # Core
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-pip install numpy matplotlib
+# numpy pinned to <2: faiss-gpu (legacy) is compiled against NumPy 1.x ABI.
+# Without the pin, `import faiss` crashes with `numpy.core.multiarray failed to import`.
+pip install "numpy<2" matplotlib
 
 # Video decode
 pip install pynvvideocodec
