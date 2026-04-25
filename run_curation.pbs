@@ -57,6 +57,6 @@ python dag.py \
     --dedup_threshold  $DEDUP_THRESH \
     --min_score        $MIN_SCORE \
     --shard_size       $SHARD_SIZE \
-    --from_stage       embed
+    --from_stage       caption
 
 echo "Job completed at $(date)"

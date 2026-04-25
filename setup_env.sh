@@ -33,6 +33,7 @@ pip install huggingface_hub
 
 # VLM captioning (Qwen2.5-VL)
 pip install qwen-vl-utils
+pip install qwen-vl-utils[decord] 
 # transformers already installed above
 
 # WebDataset
