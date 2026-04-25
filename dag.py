@@ -98,10 +98,11 @@ def task_dedup(threshold: float):
     p = _paths()
     _run([
         sys.executable, "dedup.py",
-        "--video_dir", str(p["videos"]),
-        "--emb_dir",   str(p["emb"]),
-        "--threshold", str(threshold),
-        "--out",       str(p["data"] / "dedup_results.json"),
+        "--video_dir",  str(p["videos"]),
+        "--emb_dir",    str(p["emb"]),
+        "--threshold",  str(threshold),
+        "--out",        str(p["data"] / "dedup_results.json"),
+        "--index_path", str(p["data"] / "faiss.index"),
     ], "dedup")
 
 

@@ -151,7 +151,7 @@ def main():
     print(f"Actors: {n_actors} ({ACTORS_PER_GPU} per GPU × {args.num_gpus} GPUs)")
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="score", resume="allow", id="score-stage")
+               name="score", resume="allow")
 
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 

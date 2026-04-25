@@ -200,7 +200,7 @@ def main():
     print(f"Workers    : {args.workers}")
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="ingest-stage", resume="allow", id="ingest-stage",
+               name="ingest-stage", resume="allow",
                config={"split":   args.split,
                        "limit":   args.limit,
                        "workers": args.workers,

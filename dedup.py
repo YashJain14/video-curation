@@ -84,11 +84,26 @@ def load_embeddings(emb_dir: Path) -> tuple[list[str], np.ndarray]:
     return video_paths, embeddings
 
 
-def build_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
-    """Build an exact cosine-similarity FAISS index."""
+def build_index(embeddings: np.ndarray,
+                index_path: Path | None = None) -> faiss.IndexFlatIP:
+    """
+    Build (or load) an exact cosine-similarity FAISS index.
+    If index_path exists, loads it instead of rebuilding.
+    Saves the index to index_path after building.
+    """
+    if index_path and index_path.exists():
+        print(f"Loading cached FAISS index from {index_path} ...")
+        return faiss.read_index(str(index_path))
+
     dim   = embeddings.shape[1]
     index = faiss.IndexFlatIP(dim)
     index.add(embeddings)
+
+    if index_path:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(index, str(index_path))
+        print(f"FAISS index saved → {index_path}")
+
     return index
 
 
@@ -148,12 +163,14 @@ def find_duplicates(video_paths: list[str], embeddings: np.ndarray,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video_dir", default=None,
+    ap.add_argument("--video_dir",  default=None,
                     help="Video directory for exact dedup. If omitted, skips stage 1.")
-    ap.add_argument("--emb_dir",   default="data/embeddings")
-    ap.add_argument("--threshold", type=float, default=0.95,
+    ap.add_argument("--emb_dir",    default="data/embeddings")
+    ap.add_argument("--threshold",  type=float, default=0.95,
                     help="Cosine similarity threshold for near-duplicate")
-    ap.add_argument("--out",       default="data/dedup_results.json")
+    ap.add_argument("--out",        default="data/dedup_results.json")
+    ap.add_argument("--index_path", default=None,
+                    help="Path to save/load persistent FAISS index. If exists, skips rebuild.")
     args = ap.parse_args()
 
     emb_dir = Path(args.emb_dir)
@@ -161,10 +178,11 @@ def main():
     exact_removed = []
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="dedup-stage", resume="allow", id="dedup-stage",
-               config={"threshold": args.threshold,
-                       "video_dir": args.video_dir,
-                       "emb_dir":   str(emb_dir)})
+               name="dedup-stage", resume="allow",
+               config={"threshold":  args.threshold,
+                       "video_dir":  args.video_dir,
+                       "emb_dir":    str(emb_dir),
+                       "index_path": args.index_path})
 
     # ── Stage 1: Exact dedup ──────────────────────────────────────────────────
     if args.video_dir:
@@ -183,7 +201,8 @@ def main():
     print(f"  Loaded {len(video_paths)} videos  dim={embeddings.shape[1]}")
 
     print("Building FAISS index ...")
-    index = build_index(embeddings)
+    index_path = Path(args.index_path) if args.index_path else None
+    index = build_index(embeddings, index_path)
 
     print(f"Finding near-duplicates ...")
     kept, near_removed = find_duplicates(video_paths, embeddings, index, args.threshold)

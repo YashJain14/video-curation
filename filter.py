@@ -81,7 +81,7 @@ def main():
     t0 = time.perf_counter()
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="filter-stage", resume="allow", id="filter-stage",
+               name="filter-stage", resume="allow",
                config={"query":     args.query,
                        "threshold": args.threshold,
                        "inverted":  args.invert,

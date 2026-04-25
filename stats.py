@@ -185,7 +185,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="stats-stage", resume="allow", id="stats-stage",
+               name="stats-stage", resume="allow",
                config={"video_dir": args.video_dir,
                        "min_clips": args.min_clips})
 
