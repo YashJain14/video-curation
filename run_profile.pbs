@@ -28,13 +28,17 @@ mkdir -p "$SCRATCH_DIR/reports"
 echo "Scratch: $SCRATCH_DIR"
 echo "Videos:  $(find $SCRATCH_DIR/raw_videos -name '*.mp4' | wc -l) clips"
 
+pip install plotly jinja2 -q
+
 python profile_run.py \
     --video_dir    "$SCRATCH_DIR/raw_videos" \
     --out_dir      "$SCRATCH_DIR/embeddings" \
     --report_dir   "$SCRATCH_DIR/reports" \
     --frames_per_video 8 \
     --num_gpus     4 \
-    --torchscope   "$HOME/torchscope"
+    --torchscope   "$HOME/torchscope" \
+    --force \
+    --limit        500
 
 echo "Job completed at $(date)"
 echo "Reports:"

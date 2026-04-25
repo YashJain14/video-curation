@@ -55,7 +55,8 @@ pip install requests
 # Ray distributed
 pip install "ray[default]"
 
-# Profiling: torchscope (local checkout, not on PyPI)
+# Profiling: torchscope dependencies + local checkout
+pip install plotly jinja2
 # Clone your torchscope repo and install as editable:
 #   git clone https://github.com/YashJain14/torchscope.git ~/torchscope
 #   pip install -e ~/torchscope

@@ -88,7 +88,7 @@ def _sample_frames(batches, n, is_gpu):
 @ray.remote(num_gpus=0.25)
 class EmbedWorkerProfiled:
     def __init__(self, out_dir: str, frames_per_video: int,
-                 ts_path: str, actor_name: str, worker_id: int):
+                 ts_path: str, actor_name: str, worker_id: int, force: bool = False):
         _add_torchscope_path(ts_path)
         self.device          = "cuda:0"
         self.out_dir         = out_dir
@@ -97,6 +97,7 @@ class EmbedWorkerProfiled:
         self.ts_path         = ts_path
         self.actor_name      = actor_name
 
+        self.force           = force
         self.model, self.processor = _load_clip(self.device)
 
         # Build profiling context once per actor lifetime
@@ -123,7 +124,7 @@ class EmbedWorkerProfiled:
 
     def process(self, video_path: str) -> dict:
         out_path = Path(self.out_dir) / (Path(video_path).stem + ".npz")
-        if out_path.exists():
+        if out_path.exists() and not self.force:
             return {"path": video_path, "status": "cached"}
 
         t0 = time.perf_counter()
@@ -182,6 +183,12 @@ def main():
     ap.add_argument("--torchscope",       default=None,
                     help="Path to torchscope repo root. "
                          "No pip install needed — just pass the directory.")
+    ap.add_argument("--force",            action="store_true",
+                    help="Ignore existing .npz cache — re-embed every video. "
+                         "Required to get real GPU work for profiling.")
+    ap.add_argument("--limit",            type=int, default=None,
+                    help="Only process the first N videos. Use with --force "
+                         "to profile a subset without re-embedding all 10k.")
     args = ap.parse_args()
 
     scratch    = Path(os.environ.get("SCRATCH_DIR") or
@@ -194,6 +201,8 @@ def main():
     ts = _import_torchscope(ts_path)
 
     videos = sorted(Path(args.video_dir).rglob("*.mp4"))
+    if args.limit:
+        videos = videos[:args.limit]
     if not videos:
         print(f"No videos found in {args.video_dir}")
         return
@@ -239,7 +248,7 @@ def main():
     workers = [
         EmbedWorkerProfiled.remote(
             str(out_dir), args.frames_per_video,
-            ts_path, actor_name, i,
+            ts_path, actor_name, i, args.force,
         )
         for i in range(concurrency)
     ]
