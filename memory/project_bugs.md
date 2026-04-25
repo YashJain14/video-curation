@@ -1,6 +1,6 @@
 ---
 name: video-curation pipeline bugs
-description: Two bugs found and fixed in the embed stage during April 2026 debugging session
+description: Three bugs found in the embed stage during April 2026 debugging session; Bug 1 confirmed fixed, Bug 2 fix applied but unverified, Bug 3 fix applied but unverified
 type: project
 ---
 
@@ -55,4 +55,42 @@ There is also a hardware-level NVDEC instance limit (typically 2–5 per GPU). S
 - `num_gpus=1` per actor — works but wastes GPU packing (4→16 concurrent tasks)
 - `force_cpu=True` PyAV decode — safe but unnecessary performance loss
 
-**Status:** Fix applied 2026-04-25.
+**Status:** STILL OCCURRING after switching to SimpleDecoder. See Bug 3 and Bug 4 for the follow-on issues. SimpleDecoder alone does not solve the CUDA context destruction problem — the frames hold live GPU pointers into the decoder's context, so the context must stay alive until after tensor conversion.
+
+---
+
+## Bug 3 — `SimpleDecoder` frames can't be converted via `np.array(f)` (dtype=object)
+
+**Symptom:** 100% of videos fail with:
+```
+failed: can't convert np.ndarray of type numpy.object_. The only supported types are: float64, float32, ...
+```
+This happened immediately after switching to `SimpleDecoder` (Bug 2 fix).
+
+**Root cause:** `SimpleDecoder` (and `ThreadedDecoder`) return DLPack-compatible frame objects, not raw numpy arrays. Calling `np.array(f)` wraps the object itself rather than extracting pixel data, producing a 0-d array of dtype=object. `torch.as_tensor()` then rejects it.
+
+**Fix (applied 2026-04-25):** Use `torch.from_dlpack(f).to(device)` instead of `torch.as_tensor(np.array(f), device=device).clone()` in both `decode_gpu_simple` and `decode_gpu_threaded` in `decode.py`.
+
+**How to apply:** Any PyNvVideoCodec frame object (from either decoder) must be converted via DLPack: `torch.from_dlpack(frame)`. Never pass directly to `np.array()`.
+
+**Status:** Fix applied 2026-04-25. UNVERIFIED — see Bug 4 below which was diagnosed in the same run.
+
+---
+
+## Bug 4 — `DecodedFrame` holds live GPU pointer; `del dec` before conversion causes `CUDA_ERROR_CONTEXT_IS_DESTROYED`
+
+**Symptom:** `CUDA_ERROR_CONTEXT_IS_DESTROYED` or `CUDA_ERROR_INVALID_CONTEXT` in `ExternalBuffer.cpp:131` when converting frames to tensors. Crashes actors even with `SimpleDecoder`.
+
+**Root cause:** `DecodedFrame` objects returned by `SimpleDecoder` (and `ThreadedDecoder`) are not self-contained copies — they hold live pointers into GPU memory that is owned by the decoder's CUDA context. Calling `del dec` before converting frames to tensors destroys the context while the frame pointers are still live. The crash fires at `torch.from_dlpack(f)` or similar when those pointers are dereferenced.
+
+Confirmed by the log: the crash in `ExternalBuffer.cpp` happened immediately after `del dec` and before tensor conversion completed.
+
+**Fix (applied 2026-04-25):** Convert all frames to tensors first, then delete the decoder:
+```python
+tensors = [torch.from_dlpack(f).to(device) for f in frames]
+del dec, frames   # safe: GPU data is now in PyTorch-managed memory
+```
+
+**How to apply:** Never `del dec` (or let it go out of scope) while `DecodedFrame` objects from it are still unconverted. Always copy to PyTorch tensors or numpy first.
+
+**Status:** Fix applied 2026-04-25. UNVERIFIED — awaiting next job run on cluster.

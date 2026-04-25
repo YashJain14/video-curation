@@ -45,15 +45,14 @@ def decode_gpu_threaded(video_path: str, max_frames: int = 512,
     dec   = ThreadedDecoder(video_path, max_frames * 2, gpu_id=0,
                             output_color_type=OutputColorType.RGB)
     all_f = dec.get_batch_frames(max_frames)
-    del dec
+
+    # Convert before del dec — frames hold live GPU pointers into decoder's context.
+    tensors = [torch.from_dlpack(f).to(device) for f in all_f]
+    del dec, all_f
 
     batches = []
-    for i in range(0, len(all_f), batch_size):
-        chunk = all_f[i : i + batch_size]
-        batch = torch.stack([
-            torch.from_dlpack(f).to(device) for f in chunk
-        ])
-        batches.append(batch)
+    for i in range(0, len(tensors), batch_size):
+        batches.append(torch.stack(tensors[i : i + batch_size]))
 
     torch.cuda.synchronize()
     return batches, time.perf_counter() - t0
@@ -86,21 +85,16 @@ def decode_gpu_simple(video_path: str, max_frames: int = 512,
     if frames:
         f0 = frames[0]
         log.debug(f"  frame[0] type={type(f0)}  attrs={[a for a in dir(f0) if not a.startswith('_')]}")
-        try:
-            arr = np.array(f0)
-            log.debug(f"  np.array(frame[0]).shape={arr.shape}  dtype={arr.dtype}")
-        except Exception as e:
-            log.error(f"  np.array(frame[0]) failed: {e}")
 
-    del dec
+    # Convert to tensors while decoder (and its CUDA context) is still alive.
+    # DecodedFrame objects hold live pointers into the decoder's GPU memory —
+    # del dec before conversion causes CUDA_ERROR_CONTEXT_IS_DESTROYED.
+    tensors = [torch.from_dlpack(f).to(device) for f in frames]
+    del dec, frames
 
     batches = []
-    for i in range(0, len(frames), batch_size):
-        chunk = frames[i : i + batch_size]
-        batch = torch.stack([
-            torch.from_dlpack(f).to(device) for f in chunk
-        ])
-        batches.append(batch)
+    for i in range(0, len(tensors), batch_size):
+        batches.append(torch.stack(tensors[i : i + batch_size]))
 
     torch.cuda.synchronize()
     return batches, time.perf_counter() - t0
