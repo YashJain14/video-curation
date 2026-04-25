@@ -46,8 +46,9 @@ def decode_gpu_threaded(video_path: str, max_frames: int = 512,
                             output_color_type=OutputColorType.RGB)
     all_f = dec.get_batch_frames(max_frames)
 
-    # Convert before del dec — frames hold live GPU pointers into decoder's context.
-    tensors = [torch.from_dlpack(f).to(device) for f in all_f]
+    # Clone immediately after from_dlpack — zero-copy wrap, must clone into
+    # PyTorch-owned memory before deleting the decoder.
+    tensors = [torch.from_dlpack(f).to(device).clone() for f in all_f]
     del dec, all_f
 
     batches = []
@@ -86,10 +87,11 @@ def decode_gpu_simple(video_path: str, max_frames: int = 512,
         f0 = frames[0]
         log.debug(f"  frame[0] type={type(f0)}  attrs={[a for a in dir(f0) if not a.startswith('_')]}")
 
-    # Convert to tensors while decoder (and its CUDA context) is still alive.
-    # DecodedFrame objects hold live pointers into the decoder's GPU memory —
-    # del dec before conversion causes CUDA_ERROR_CONTEXT_IS_DESTROYED.
-    tensors = [torch.from_dlpack(f).to(device) for f in frames]
+    # Clone immediately after from_dlpack — from_dlpack is zero-copy (just wraps
+    # the decoder's GPU pointer). Without .clone(), the tensor still points into
+    # the decoder's memory and goes invalid when dec is deleted or another actor
+    # reuses that GPU buffer, causing illegal memory access.
+    tensors = [torch.from_dlpack(f).to(device).clone() for f in frames]
     del dec, frames
 
     batches = []

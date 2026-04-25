@@ -85,12 +85,14 @@ This happened immediately after switching to `SimpleDecoder` (Bug 2 fix).
 
 Confirmed by the log: the crash in `ExternalBuffer.cpp` happened immediately after `del dec` and before tensor conversion completed.
 
-**Fix (applied 2026-04-25):** Convert all frames to tensors first, then delete the decoder:
+**Root cause (deeper):** `torch.from_dlpack()` is zero-copy — it wraps the decoder's GPU pointer without copying data. Even converting before `del dec` is not enough, because the resulting tensors still point into decoder-owned memory. When `del dec` frees that memory (or another actor reuses the GPU buffer), any access to those tensors causes `illegal memory access`.
+
+**Fix (applied 2026-04-25):** Convert and immediately `.clone()` to force a copy into PyTorch-owned GPU memory before deleting the decoder:
 ```python
-tensors = [torch.from_dlpack(f).to(device) for f in frames]
-del dec, frames   # safe: GPU data is now in PyTorch-managed memory
+tensors = [torch.from_dlpack(f).to(device).clone() for f in frames]
+del dec, frames   # safe: tensors now own their GPU memory
 ```
 
-**How to apply:** Never `del dec` (or let it go out of scope) while `DecodedFrame` objects from it are still unconverted. Always copy to PyTorch tensors or numpy first.
+**How to apply:** After `torch.from_dlpack()` on any PyNvVideoCodec frame, always call `.clone()` before the decoder goes out of scope. The dlpack tensor is just a pointer alias, not a copy.
 
 **Status:** Fix applied 2026-04-25. UNVERIFIED — awaiting next job run on cluster.
