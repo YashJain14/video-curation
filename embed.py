@@ -72,7 +72,8 @@ class EmbedWorker:
 
             inputs = self.processor(images=frames, return_tensors="pt", padding=True).to(self.device)
             with torch.inference_mode():
-                feats = self.model.get_image_features(**inputs)
+                vision_out = self.model.vision_model(pixel_values=inputs["pixel_values"])
+                feats = self.model.visual_projection(vision_out.pooler_output)
                 feats = F.normalize(feats, dim=-1)
 
             feats_np = feats.cpu().numpy()

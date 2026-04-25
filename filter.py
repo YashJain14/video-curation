@@ -57,7 +57,9 @@ def encode_text(query: str, device: str) -> np.ndarray:
     model.eval()
     inputs = processor(text=[query], return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
-        feats = model.get_text_features(**inputs)                     # [1, 512]
+        text_out = model.text_model(input_ids=inputs["input_ids"],
+                                    attention_mask=inputs["attention_mask"])
+        feats = model.text_projection(text_out.pooler_output)         # [1, 512]
         feats = feats / feats.norm(dim=-1, keepdim=True)
     return feats.cpu().numpy()[0]                                     # [512]
 

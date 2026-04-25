@@ -104,9 +104,10 @@ class ScoreWorker:
 
             inputs = self.processor(images=frames, return_tensors="pt", padding=True).to(self.device)
             with torch.inference_mode():
-                feats  = self.clip.get_image_features(**inputs)
-                feats  = F.normalize(feats, dim=-1)
-                scores = self.aesthetic(feats).squeeze(-1).cpu().numpy()
+                vision_out = self.clip.vision_model(pixel_values=inputs["pixel_values"])
+                feats      = self.clip.visual_projection(vision_out.pooler_output)
+                feats      = F.normalize(feats, dim=-1)
+                scores     = self.aesthetic(feats).squeeze(-1).cpu().numpy()
 
             return {
                 "path":         video_path,
