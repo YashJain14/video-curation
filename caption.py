@@ -77,11 +77,17 @@ class CaptionWorker:
                 messages, tokenize=False, add_generation_prompt=True
             )
             print(f"[caption] process_vision_info ...", flush=True)
-            image_inputs, video_inputs = process_vision_info(messages)
+            image_inputs, video_inputs, video_kwargs = process_vision_info(
+                messages, return_video_kwargs=True,
+            )
+            # fps is returned as a list by decord backend — flatten to scalar
+            if "fps" in video_kwargs and isinstance(video_kwargs["fps"], list):
+                video_kwargs["fps"] = video_kwargs["fps"][0] if video_kwargs["fps"] else 1.0
+            print(f"[caption] video_kwargs={video_kwargs}", flush=True)
             print(f"[caption] processor ...", flush=True)
             inputs = self.processor(
                 text=[text], images=image_inputs, videos=video_inputs,
-                padding=True, return_tensors="pt",
+                padding=True, return_tensors="pt", **video_kwargs,
             ).to("cuda")
 
             print(f"[caption] generate ...", flush=True)
