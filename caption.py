@@ -77,14 +77,11 @@ class CaptionWorker:
                 messages, tokenize=False, add_generation_prompt=True
             )
             print(f"[caption] process_vision_info ...", flush=True)
-            image_inputs, video_inputs, video_kwargs = process_vision_info(
-                messages, return_video_kwargs=True,
-            )
-            print(f"[caption] video_kwargs={video_kwargs}", flush=True)
+            image_inputs, video_inputs = process_vision_info(messages)
             print(f"[caption] processor ...", flush=True)
             inputs = self.processor(
                 text=[text], images=image_inputs, videos=video_inputs,
-                padding=True, return_tensors="pt", **video_kwargs
+                padding=True, return_tensors="pt",
             ).to("cuda")
 
             print(f"[caption] generate ...", flush=True)
