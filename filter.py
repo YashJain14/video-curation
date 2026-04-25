@@ -31,6 +31,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from transformers import CLIPProcessor, CLIPModel
 
 MODEL_ID = "openai/clip-vit-base-patch32"
@@ -78,6 +79,13 @@ def main():
     args = ap.parse_args()
 
     t0 = time.perf_counter()
+
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="filter-stage", resume="allow", id="filter-stage",
+               config={"query":     args.query,
+                       "threshold": args.threshold,
+                       "inverted":  args.invert,
+                       "emb_dir":   args.emb_dir})
 
     print(f"Loading embeddings from {args.emb_dir} ...")
     video_paths, embeddings = load_embeddings(Path(args.emb_dir))
@@ -127,6 +135,21 @@ def main():
             "removed":   [r["path"] for r in removed],
         }, f, indent=2)
     print(f"\nResults saved → {out}")
+
+    sims_arr = np.array(sims)
+    wandb.log({
+        "filter/total":       len(video_paths),
+        "filter/kept":        len(kept),
+        "filter/removed":     len(removed),
+        "filter/kept_pct":    100 * len(kept) / max(len(video_paths), 1),
+        "filter/sim_mean":    float(sims_arr.mean()),
+        "filter/sim_median":  float(np.median(sims_arr)),
+        "filter/sim_max":     float(sims_arr.max()),
+        "filter/sim_min":     float(sims_arr.min()),
+        "filter/elapsed_s":   elapsed,
+        "filter/sim_hist":    wandb.Histogram(sims_arr.tolist()),
+    })
+    wandb.finish()
 
 
 if __name__ == "__main__":

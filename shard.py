@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import wandb
 
 
 def load_lookup(json_path: str, key: str = "path") -> dict:
@@ -128,6 +129,12 @@ def main():
 
     t0 = time.perf_counter()
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="shard-stage", resume="allow", id="shard-stage",
+               config={"shard_size": args.shard_size,
+                       "min_score":  args.min_score,
+                       "out_dir":    args.out_dir})
+
     # Load lookups
     captions   = load_lookup(args.captions)   # {path: {caption, ...}}
     scores     = load_lookup(args.scores)      # {path: {mean_score, ...}}
@@ -147,10 +154,22 @@ def main():
     )
 
     elapsed = time.perf_counter() - t0
+    total_bytes = 0
     print(f"\nWrote {len(shard_paths)} shards → {args.out_dir}  ({elapsed:.1f}s)")
     for p in shard_paths:
-        size_mb = Path(p).stat().st_size / 1e6
-        print(f"  {Path(p).name}  {size_mb:.1f} MB")
+        size_b   = Path(p).stat().st_size
+        total_bytes += size_b
+        print(f"  {Path(p).name}  {size_b/1e6:.1f} MB")
+
+    wandb.log({
+        "shard/n_shards":           len(shard_paths),
+        "shard/n_videos_input":     len(videos),
+        "shard/n_videos_after_dedup": len(videos),
+        "shard/total_bytes":        total_bytes,
+        "shard/total_mb":           total_bytes / 1e6,
+        "shard/elapsed_s":          elapsed,
+    })
+    wandb.finish()
 
 
 if __name__ == "__main__":
