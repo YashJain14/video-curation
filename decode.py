@@ -66,6 +66,9 @@ def decode_gpu_simple(video_path: str, max_frames: int = 512,
     on a shared GPU (Ray fractional actors, num_gpus=0.25).
     Returns (batches, decode_time_s) — batches: list of [B,H,W,C] uint8 GPU tensors.
     """
+    import logging
+    log = logging.getLogger("decode")
+
     from PyNvVideoCodec import SimpleDecoder
 
     t0 = time.perf_counter()
@@ -77,6 +80,18 @@ def decode_gpu_simple(video_path: str, max_frames: int = 512,
         frames.append(frame)
         if len(frames) >= max_frames:
             break
+
+    log.debug(f"SimpleDecoder: {len(frames)} frames  type={type(frames[0]) if frames else 'none'}")
+
+    if frames:
+        f0 = frames[0]
+        log.debug(f"  frame[0] type={type(f0)}  attrs={[a for a in dir(f0) if not a.startswith('_')]}")
+        try:
+            arr = np.array(f0)
+            log.debug(f"  np.array(frame[0]).shape={arr.shape}  dtype={arr.dtype}")
+        except Exception as e:
+            log.error(f"  np.array(frame[0]) failed: {e}")
+
     del dec
 
     batches = []
