@@ -118,7 +118,7 @@ def task_score(frames_per_video: int, num_gpus: int):
 
 
 @task(name="caption", retries=1)
-def task_caption(frames_per_video: int, num_gpus: int):
+def task_caption(frames_per_video: int, num_gpus: int, min_score: float):
     p = _paths()
     _run([
         sys.executable, "caption.py",
@@ -126,6 +126,8 @@ def task_caption(frames_per_video: int, num_gpus: int):
         "--out",              str(p["data"] / "captions.json"),
         "--frames_per_video", str(frames_per_video),
         "--num_gpus",         str(num_gpus),
+        "--scores",           str(p["data"] / "scores.json"),
+        "--min_score",        str(min_score),
     ], "caption")
 
 
@@ -207,7 +209,7 @@ def curation_pipeline(
         task_score(frames_per_video, num_gpus)
 
     if stage_idx <= STAGES.index("caption"):
-        task_caption(frames_per_video, num_gpus)
+        task_caption(frames_per_video, num_gpus, min_score)
 
     if stage_idx <= STAGES.index("shard"):
         task_shard(shard_size, min_score)

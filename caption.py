@@ -74,7 +74,7 @@ class CaptionWorker:
                 messages, tokenize=False, add_generation_prompt=True
             )
             image_inputs, video_inputs, video_kwargs = process_vision_info(
-                [messages], return_video_kwargs=True,
+                messages, return_video_kwargs=True,
                 image_patch_size=16, return_video_metadata=True
             )
             inputs = self.processor(
@@ -106,13 +106,26 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--video_dir",        required=True)
     ap.add_argument("--out",              default="data/captions.json")
-    ap.add_argument("--frames_per_video", type=int, default=4)
+    ap.add_argument("--frames_per_video", type=int, default=16)
     ap.add_argument("--num_gpus",         type=int, default=1,
                     help="One CaptionWorker per GPU — num_gpus tasks in parallel.")
+    ap.add_argument("--scores",           default=None,
+                    help="Path to scores.json; if provided, only caption videos above --min_score.")
+    ap.add_argument("--min_score",        type=float, default=4.5)
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
-    videos = sorted(Path(args.video_dir).rglob("*.mp4"))
+    all_videos = sorted(Path(args.video_dir).rglob("*.mp4"))
+
+    if args.scores:
+        with open(args.scores) as f:
+            scores = json.load(f)
+        passing = {r["path"] for r in scores if r.get("mean_score", 0) >= args.min_score}
+        videos = [v for v in all_videos if str(v) in passing]
+        print(f"Score filter: {len(videos)}/{len(all_videos)} videos pass mean_score >= {args.min_score}")
+    else:
+        videos = all_videos
+
     print(f"Captioning {len(videos)} videos with {MODEL_ID} ...")
     print(f"Actors: {args.num_gpus} (1 per GPU)")
 
