@@ -81,8 +81,11 @@ def write_shards(videos: list[str], captions: dict, scores: dict,
         if mean_score < min_score:
             continue
 
+        caption = captions.get(video_path, {}).get("caption", "")
+        if not caption:
+            continue
+
         video_bytes = Path(video_path).read_bytes()
-        caption     = captions.get(video_path, {}).get("caption", "")
         embedding   = load_embedding(emb_dir, video_path)
         label       = Path(video_path).parent.name
         key         = f"{shard_idx:05d}_{sample_idx % shard_size:04d}"
@@ -130,7 +133,7 @@ def main():
     t0 = time.perf_counter()
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="shard-stage", resume="allow", id="shard-stage",
+               name="shard-stage", resume="allow",
                config={"shard_size": args.shard_size,
                        "min_score":  args.min_score,
                        "out_dir":    args.out_dir})
