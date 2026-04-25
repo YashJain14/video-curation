@@ -1,6 +1,6 @@
 ---
 name: video-curation pipeline bugs
-description: Three bugs found in the embed stage during April 2026 debugging session; Bug 1 confirmed fixed, Bug 2 fix applied but unverified, Bug 3 fix applied but unverified
+description: Five bugs found in the embed stage during April 2026 debugging. Bug 1 fixed. Bugs 2-4 superseded by Bug 5 resolution — Ray actors now decode on CPU (PyAV) to sidestep PyNvVideoCodec CUDA-context contention on shared fractional GPUs.
 type: project
 ---
 
@@ -95,4 +95,32 @@ del dec, frames   # safe: tensors now own their GPU memory
 
 **How to apply:** After `torch.from_dlpack()` on any PyNvVideoCodec frame, always call `.clone()` before the decoder goes out of scope. The dlpack tensor is just a pointer alias, not a copy.
 
-**Status:** Fix applied 2026-04-25. UNVERIFIED — awaiting next job run on cluster.
+**Status:** Fix applied 2026-04-25. Still failing in cluster runs — see Bug 5.
+
+---
+
+## Bug 5 — DLPack zero-copy clone races with `del dec`; PyNvVideoCodec on shared fractional GPUs is fundamentally fragile
+
+**Symptom:** Even with `.clone()` after `from_dlpack`, embed actors still crash intermittently with `CUDA_ERROR_CONTEXT_IS_DESTROYED` / illegal memory access. Same failure mode as Bug 4.
+
+**Root cause (deeper):** Two compounding issues.
+
+1. **Async clone race.** `torch.from_dlpack(f).clone()` enqueues an async copy on PyTorch's default stream. PyNvVideoCodec decodes on its *own* internal CUDA stream. DLPack does not define producer/consumer synchronization — `from_dlpack` assumes the producer's data is "ready", which it may not be when the clone runs. And the `torch.cuda.synchronize()` in `decode_gpu_simple` was placed *after* `del dec`, too late: the decoder (and its source GPU memory) could be freed before the queued clone copy actually executes.
+
+2. **Per-actor CUDA contexts on a shared GPU.** Every `SimpleDecoder(cuda_context=0, cuda_stream=0)` creates its own CUDA context on the assigned GPU. With `num_gpus=0.25` (4 actors per GPU), 4 independent contexts share each A100. A100 has 5 NVDEC engines so the hardware can handle the load, but context destruction in one actor can invalidate DLPack pointers held by neighbours.
+
+**Fix (applied 2026-04-25):** Two-part.
+
+- **Synchronize before `del dec`** in `decode_gpu_simple` and `decode_gpu_threaded` so the clone copy is guaranteed to complete before the source memory is freed. Also drop the redundant `.to(device)` (frames are already on the same GPU).
+- **Switch `decode_video_actor` to PyAV (CPU decode).** Ray actors no longer touch PyNvVideoCodec at all. PyAV returns self-contained numpy frames — no shared GPU state, no CUDA context to race on, no DLPack lifetime to manage. The standalone `decode_video()` (used by the profiler, single-process, full GPU) keeps the GPU decode path.
+
+**Tradeoffs considered:**
+- *Pass PyTorch's CUDA context/stream to SimpleDecoder* (`cuda_context=int(cuCtxGetCurrent()), cuda_stream=stream.cuda_stream`) — architecturally correct, eliminates per-actor context creation, keeps GPU decode. Adds a `cuda-python` dependency. Defer until decode is actually the bottleneck.
+- *Migrate to torchcodec* — Meta/PyTorch's official NVDEC wrapper; handles DLPack synchronization and tensor lifetime properly. Worth doing long-term; not a quick swap.
+- *Use `use_device_memory=False`* on SimpleDecoder — would force host memory, but format/version support is uneven.
+
+**Why CPU decode is fine here:** CLIP inference dominates per-video time (~50–100 ms). CPU decode of 8 sampled frames is a few ms. We are not decode-bound, so the "free" GPU decode wasn't buying anything to begin with — only adding contention.
+
+**How to apply:** Any future fractional-GPU Ray actor doing video work should default to PyAV/CPU decode and only reach for NVDEC when (a) decode profiles as the bottleneck and (b) the actor owns a full GPU or shares an explicit CUDA context with the decoder.
+
+**Status:** Fix applied 2026-04-25. Awaiting cluster verification.

@@ -101,7 +101,7 @@ class ScoreWorker:
         try:
             batches, _, backend = decode_video_actor(video_path, max_frames=64,
                                                        batch_size=16, device=self.device)
-            is_gpu = backend != "opencv_cpu"
+            is_gpu = "pynvvideocodec" in backend
             frames = _sample_frames(batches, frames_per_video, is_gpu)
             if not frames:
                 return {"path": video_path, "status": "failed: no frames",
