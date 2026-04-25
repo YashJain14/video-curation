@@ -21,7 +21,7 @@ CLIP_BASE   = "openai/clip-vit-base-patch32"          # embed.py, filter.py
 CLIP_LARGE  = "openai/clip-vit-large-patch14"         # score.py
 AESTHETIC_REPO  = "camenduru/improved-aesthetic-predictor"
 AESTHETIC_FILE  = "sac+logos+ava1-l14-linearMSE.pth"
-QWEN_VL     = "Qwen/Qwen2.5-VL-7B-Instruct"           # caption.py
+QWEN_VL     = "Qwen/Qwen3-VL-8B-Instruct"              # caption.py
 
 
 def main():

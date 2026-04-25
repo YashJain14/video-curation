@@ -1,14 +1,14 @@
 """
 caption.py
 ----------
-VLM-based captioning for video clips using Qwen2.5-VL-7B-Instruct.
+VLM-based captioning for video clips using Qwen3-VL-8B-Instruct.
 Samples N keyframes per video, passes them to the VLM, generates a
 single descriptive caption per clip.
 
 Captions are stored in data/captions.json and later embedded into
 WebDataset shards alongside the video bytes.
 
-Why Qwen2.5-VL:
+Why Qwen3-VL:
   - Strong video understanding, handles multi-frame input natively
   - Open weights, runs on a single A100 in 4-bit or bf16
   - Outputs natural language captions suitable for text-conditioned training
@@ -32,7 +32,7 @@ from PIL import Image
 from decode import decode_video
 
 
-MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
 
 CAPTION_PROMPT = (
     "You are a video captioning assistant. "
@@ -59,19 +59,15 @@ def _sample_frames_pil(batches, n, is_gpu):
 @ray.remote(num_gpus=1)
 class CaptionWorker:
     def __init__(self):
-        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
-        self.device = "cuda:0"
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch.bfloat16,
-            device_map=self.device,
+        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+            MODEL_ID, dtype="auto", device_map="auto"
         )
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(MODEL_ID)
 
     def process(self, video_path: str, frames_per_video: int, cache_dir: str) -> dict:
         import json
-        from qwen_vl_utils import process_vision_info
         cache_path = Path(cache_dir) / (Path(video_path).stem + ".caption.json")
         if cache_path.exists():
             return json.loads(cache_path.read_text())
@@ -79,7 +75,7 @@ class CaptionWorker:
         t0 = time.perf_counter()
         try:
             batches, _, backend = decode_video(video_path, max_frames=64,
-                                               batch_size=16, device=self.device)
+                                               batch_size=16, device="cuda")
             is_gpu = backend != "opencv_cpu"
             frames = _sample_frames_pil(batches, frames_per_video, is_gpu)
             if not frames:
@@ -90,19 +86,19 @@ class CaptionWorker:
                 content.append({"type": "image", "image": img})
 
             messages = [{"role": "user", "content": content}]
-            text = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            image_inputs, _ = process_vision_info(messages)
-            inputs = self.processor(
-                text=[text], images=image_inputs,
-                return_tensors="pt", padding=True
-            ).to(self.device)
+            inputs = self.processor.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True,
+                return_dict=True, return_tensors="pt"
+            ).to(self.model.device)
 
             with torch.inference_mode():
                 out_ids = self.model.generate(**inputs, max_new_tokens=128)
-            trimmed = out_ids[:, inputs["input_ids"].shape[1]:]
-            caption = self.processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+            trimmed = [
+                out[len(in_ids):] for in_ids, out in zip(inputs["input_ids"], out_ids)
+            ]
+            caption = self.processor.batch_decode(
+                trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0].strip()
 
             result = {
                 "path":    video_path,
@@ -110,7 +106,6 @@ class CaptionWorker:
                 "caption": caption,
                 "time_s":  time.perf_counter() - t0,
             }
-            import json
             Path(cache_dir).mkdir(parents=True, exist_ok=True)
             cache_path.write_text(json.dumps(result))
             return result

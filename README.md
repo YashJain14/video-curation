@@ -23,7 +23,7 @@ Kinetics-400 S3 (CVDF)
 [score.py]       LAION aesthetic scorer           (Ray, 0.25 GPU/task → 16 concurrent)
        │
        ▼
-[caption.py]     Qwen2.5-VL-7B captioning         (Ray, 1.0 GPU/task → 4 concurrent)
+[caption.py]     Qwen3-VL-8B captioning         (Ray, 1.0 GPU/task → 4 concurrent)
        │
        ▼
 [shard.py]       WebDataset .tar shards (video + caption + score + embedding)
@@ -42,7 +42,7 @@ bash setup_env.sh
 # Pre-fetch model weights into the HF cache. Compute nodes have no
 # internet (HF_HUB_OFFLINE=1), so this MUST run on the login node.
 # Pulls CLIP ViT-B/32, ViT-L/14, the LAION aesthetic predictor, and
-# Qwen2.5-VL-7B (~16 GB).
+# Qwen3-VL-8B (~16 GB).
 python prefetch_models.py
 
 # Clone torchscope (no pip install needed — used via local path)
@@ -110,7 +110,7 @@ python filter.py --emb_dir $SCRATCH_DIR/embeddings --query "person playing sport
 # Score (LAION aesthetic)
 python score.py --video_dir $SCRATCH_DIR/raw_videos --out $SCRATCH_DIR/scores.json --num_gpus 4
 
-# Caption (Qwen2.5-VL-7B)
+# Caption (Qwen3-VL-8B)
 python caption.py --video_dir $SCRATCH_DIR/raw_videos --out $SCRATCH_DIR/captions.json --num_gpus 4
 
 # Dataset stats + charts
@@ -151,7 +151,7 @@ python manifest.py list --manifest_dir $SCRATCH_DIR/manifests
 | Two-stage dedup | MD5 catches exact copies cheaply (O(N)); FAISS near-dedup catches re-encoded duplicates |
 | FAISS IndexFlatIP | L2-normalised vectors → inner product = cosine sim; exact search, fast for <100k videos |
 | LAION aesthetic scorer | Pretrained MLP over CLIP ViT-L/14; predicts human aesthetic ratings [0–10] |
-| Qwen2.5-VL-7B | Strong multi-frame video understanding; 1 full GPU/task for bf16 inference |
+| Qwen3-VL-8B | Strong multi-frame video understanding; 1 full GPU/task for bf16 inference |
 | WebDataset shards | Sequential reads saturate disk/network bandwidth; streamable from S3/GCS |
 | Prefect orchestration | Zero-config local execution; same DAG/task/retry model as Airflow |
 | Versioned manifests | Any training data mix reproducible from a single JSON; supports diff between versions |
@@ -187,6 +187,6 @@ $SCRATCH_DIR/                         # ~/scratch/video-curation
 
 ## Known Limitations
 
-- Captioning is the bottleneck — Qwen2.5-VL-7B in bf16 needs the full 40 GB A100 per task.
+- Captioning is the bottleneck — Qwen3-VL-8B in bf16 needs the full 40 GB A100 per task.
 - FAISS `IndexFlatIP` is exact search, O(N²) at query time. For >500k videos swap to `IndexIVFFlat(nlist=1024)`.
 - Kinetics-400 S3 hosting is maintained by CVDF — URLs are stable but the dataset requires accepting the Kinetics licence.
