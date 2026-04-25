@@ -251,6 +251,8 @@ scp user@cluster:~/scratch/video-curation/reports/*.html .
 
 ## Architecture Decisions
 
+### Design Choices
+
 | Decision | Why |
 |---|---|
 | S3 CVDF ingest | Pre-cut clips, stable URLs, ~3-5× faster than yt-dlp; mirrors real production data lake patterns |
@@ -266,6 +268,62 @@ scp user@cluster:~/scratch/video-curation/reports/*.html .
 | Prefect orchestration | Zero-config local execution; DAG/task/retry model; per-stage caching via Prefect state |
 | Versioned manifests | Any training data mix reproducible from a single JSON; supports diff between versions |
 | torchscope profiling | GPU observability toolkit; proves 0.25 GPU/task allocation loads all 4 GPUs efficiently |
+
+---
+
+### Non-Obvious Decisions & Bugs Fixed
+
+These are decisions that weren't obvious upfront — things discovered while building and running on real hardware.
+
+#### 1 — Aesthetic predictor HuggingFace repo
+
+`camenduru/improved-aesthetic-predictor` is the correct repo for the LAION aesthetic MLP weights (`sac+logos+ava1-l14-linearMSE.pth`). The originally referenced `shunk031/improved-aesthetic-predictor` returns 404. The original author's repo (`christophschuhmann/improved-aesthetic-predictor`) also had issues.
+
+#### 2 — Qwen3-VL API differences from Qwen2.5-VL
+
+Upgrading from `Qwen2.5-VL-7B` to `Qwen3-VL-8B` requires API changes beyond just swapping the model ID:
+
+- Class: `Qwen3VLForConditionalGeneration` (not `Qwen2_5_VLForConditionalGeneration`)
+- Loading: `dtype="auto"` instead of `torch_dtype=torch.bfloat16`
+- Inference: `apply_chat_template` with `tokenize=False` + separate `process_vision_info` call
+- `process_vision_info` returns a 3-tuple `(image_inputs, video_inputs, video_kwargs)` when `return_video_kwargs=True`
+
+#### 3 — qwen-vl-utils fps list bug (version 0.0.14)
+
+`process_vision_info` with `return_video_kwargs=True` and the decord backend returns `fps` as a list `[0.799...]` instead of a scalar, causing a validation error inside the processor. Fix applied in `caption.py`:
+
+```python
+if "fps" in video_kwargs and isinstance(video_kwargs["fps"], list):
+    video_kwargs["fps"] = video_kwargs["fps"][0] if video_kwargs["fps"] else 1.0
+```
+
+Do not pass `return_video_metadata=True` — it worsens the issue.
+
+#### 4 — PyNvVideoCodec is unsafe for fractional-GPU Ray actors
+
+Ray `num_gpus=0.25` means 4 actors share one physical GPU. Every `ThreadedDecoder` / `SimpleDecoder` creates its own CUDA context via NVDEC. These contexts race — one actor destroying its context while another holds live DLPack pointers into shared GPU memory causes `CUDA_ERROR_CONTEXT_IS_DESTROYED` crashes.
+
+The sequence of bugs encountered and how each was addressed:
+
+| Bug | Symptom | Root cause | Fix |
+|---|---|---|---|
+| Bug 1 | `BaseModelOutputWithPooling has no attribute 'norm'` — 100% silent failures | `CLIPModel.get_image_features()` returns wrong type on installed transformers version | Call submodules directly: `vision_model()` → `visual_projection()` |
+| Bug 2 | SIGSEGV in `ThreadedDecoder.end()` after ~750 videos | 4 actors per GPU race on NVDEC CUDA contexts | Switch to `SimpleDecoder` (synchronous, no background thread) |
+| Bug 3 | `can't convert np.ndarray of type numpy.object_` | `SimpleDecoder` returns DLPack objects, not numpy arrays | Convert via `torch.from_dlpack(f)` instead of `np.array(f)` |
+| Bug 4 | `CUDA_ERROR_CONTEXT_IS_DESTROYED` in `ExternalBuffer.cpp` | `del dec` freed GPU memory while async clone still in flight | Call `.clone()` before `del dec`; synchronize streams |
+| Bug 5 | Same crash even with `.clone()` | DLPack zero-copy clone races PyNvVideoCodec's internal stream; `torch.cuda.synchronize()` was after `del dec`, too late | **Switch Ray actors to PyAV (CPU decode) permanently** |
+
+**Final resolution:** All Ray actors use PyAV CPU decode (`decode_video_actor()`). The standalone `decode_video()` (used by the GPU profiler) keeps the PyNvVideoCodec path. CPU decode costs only a few ms per video vs ~50–100ms for CLIP inference — not the bottleneck.
+
+**Future path if decode becomes the bottleneck:** Pass PyTorch's CUDA context/stream explicitly to `SimpleDecoder` (`cuda_context=int(cuCtxGetCurrent()), cuda_stream=stream.cuda_stream`), or migrate to `torchcodec` (Meta's official NVDEC wrapper that handles DLPack synchronization correctly).
+
+#### 5 — Hardcoded wandb run IDs break retries
+
+All `wandb.init()` calls originally had `id="<stage>-stage"` (e.g., `id="score-stage"`). On retry, wandb rejects the same run ID with `ServerResponseError: run ID is in use`. Removed `id=` from all 7 stages — wandb generates a unique ID per run automatically.
+
+#### 6 — wandb run IDs were removed from all stages
+
+`manifest.py`, `score.py`, `caption.py`, `shard.py`, `dedup.py`, `filter.py`, `ingest.py` — all had hardcoded `id=` in `wandb.init`. Removing them means any rerun or retry creates a fresh wandb run instead of conflicting with a prior one.
 
 ---
 
