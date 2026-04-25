@@ -80,91 +80,94 @@ def _sample_frames(batches, n, is_gpu):
     return [all_frames[i] for i in indices]
 
 
-# ── Ray task ──────────────────────────────────────────────────────────────────
+# ── Ray actor ─────────────────────────────────────────────────────────────────
+# Actor (not a task function) so CLIP is loaded once per worker, not once per
+# video. With 10k videos a task function would reload ~400 MB of weights 10k
+# times; an actor loads them once in __init__ and reuses across all calls.
 
 @ray.remote(num_gpus=0.25)
-def embed_video_profiled(
-    video_path:       str,
-    out_dir:          str,
-    frames_per_video: int,
-    worker_id:        int,
-    ts_path:          str,       # path to torchscope repo (empty string = disabled)
-    actor_name:       str,       # name of the _AggregatorActor (empty = disabled)
-) -> dict:
-    """
-    Embed one video, wrapped in torchscope worker profiling.
+class EmbedWorkerProfiled:
+    def __init__(self, out_dir: str, frames_per_video: int,
+                 ts_path: str, actor_name: str, worker_id: int):
+        _add_torchscope_path(ts_path)
+        self.device          = "cuda:0"
+        self.out_dir         = out_dir
+        self.frames_per_video = frames_per_video
+        self.worker_id       = worker_id
+        self.ts_path         = ts_path
+        self.actor_name      = actor_name
 
-    torchscope integration:
-      - ts_path  : added to sys.path inside the worker (Ray workers are fresh processes)
-      - actor_name: the aggregator actor is retrieved by name (actor handles can't be
-                    pickled, so we resolve it here via ray.get_actor)
-    """
-    _add_torchscope_path(ts_path)
+        self.model, self.processor = _load_clip(self.device)
 
-    device   = "cuda:0"   # Ray sets CUDA_VISIBLE_DEVICES per task
-    out_path = Path(out_dir) / (Path(video_path).stem + ".npz")
-    if out_path.exists():
-        return {"path": video_path, "status": "cached"}
+        # Build profiling context once per actor lifetime
+        self.ctx = nullcontext()
+        if ts_path and actor_name:
+            try:
+                from torchscope.ray_profiler import RayProfiler, worker_profiler_context
 
-    # Build profiling context if torchscope is available
-    ctx = nullcontext()
-    if ts_path and actor_name:
+                # Reconstruct a minimal RayProfiler pointing at the named aggregator.
+                # Actor handles can't be pickled across the Ray task boundary, so we
+                # resolve by name here inside the fresh worker process.
+                rp = RayProfiler.__new__(RayProfiler)
+                rp._num_workers     = 1
+                rp._interval        = 0.5
+                rp._report_interval = 10.0
+                rp._enabled         = True
+                rp._actor_handle    = ray.get_actor(actor_name)
+
+                self.ctx = worker_profiler_context(rp, worker_id=worker_id, device=0)
+                self.ctx.__enter__()
+            except Exception as e:
+                print(f"[worker {worker_id}] torchscope init failed: {e}")
+                self.ctx = nullcontext()
+
+    def process(self, video_path: str) -> dict:
+        out_path = Path(self.out_dir) / (Path(video_path).stem + ".npz")
+        if out_path.exists():
+            return {"path": video_path, "status": "cached"}
+
+        t0 = time.perf_counter()
         try:
-            from torchscope.ray_profiler import RayProfiler, worker_profiler_context
-
-            # Reconstruct a minimal RayProfiler that points at the named actor.
-            # We don't call RayProfiler() (which would create a new actor);
-            # instead we attach to the already-running one via ray.get_actor.
-            rp = RayProfiler.__new__(RayProfiler)
-            rp._num_workers     = 1
-            rp._interval        = 0.5
-            rp._report_interval = 10.0
-            rp._enabled         = True
-            rp._actor_handle    = ray.get_actor(actor_name)
-
-            ctx = worker_profiler_context(rp, worker_id=worker_id, device=0)
-        except Exception as e:
-            # Profiling is best-effort — never let it kill an embed task
-            print(f"[worker {worker_id}] torchscope init failed: {e}")
-            ctx = nullcontext()
-
-    t0 = time.perf_counter()
-    try:
-        from decode import decode_video
-        with ctx:
+            from decode import decode_video
             batches, _, backend = decode_video(
-                video_path, max_frames=64, batch_size=16, device=device
+                video_path, max_frames=64, batch_size=16, device=self.device
             )
-            is_gpu = backend != "opencv_cpu"
-            frames = _sample_frames(batches, frames_per_video, is_gpu)
+            is_gpu = backend in ("pynvvideocodec_threaded", "pynvvideocodec_simple")
+            frames = _sample_frames(batches, self.frames_per_video, is_gpu)
             if not frames:
                 return {"path": video_path, "status": "failed: no frames"}
 
-            model, processor = _load_clip(device)
-            inputs = processor(
+            inputs = self.processor(
                 images=frames, return_tensors="pt", padding=True
-            ).to(device)
+            ).to(self.device)
             with torch.no_grad():
-                feats = model.get_image_features(**inputs)
-                feats = F.normalize(feats, dim=-1)
+                vision_out = self.model.vision_model(pixel_values=inputs["pixel_values"])
+                feats      = self.model.visual_projection(vision_out.pooler_output)
+                feats      = F.normalize(feats, dim=-1)
 
-        feats_np = feats.cpu().numpy()
-        mean_emb = feats_np.mean(axis=0)
-        mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
+            feats_np = feats.cpu().numpy()
+            mean_emb = feats_np.mean(axis=0)
+            mean_emb = mean_emb / (np.linalg.norm(mean_emb) + 1e-8)
 
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        np.savez(
-            out_path,
-            mean_embedding=mean_emb,
-            frame_embeddings=feats_np,
-            video_path=np.array([video_path]),
-        )
+            Path(self.out_dir).mkdir(parents=True, exist_ok=True)
+            np.savez(
+                out_path,
+                mean_embedding=mean_emb,
+                frame_embeddings=feats_np,
+                video_path=np.array([video_path]),
+            )
 
-        return {"path": video_path, "status": "ok",
-                "time_s": time.perf_counter() - t0}
+            return {"path": video_path, "status": "ok",
+                    "time_s": time.perf_counter() - t0}
 
-    except Exception as e:
-        return {"path": video_path, "status": f"failed: {e}"}
+        except Exception as e:
+            return {"path": video_path, "status": f"failed: {e}"}
+
+    def stop_profiling(self):
+        try:
+            self.ctx.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 # ── driver ────────────────────────────────────────────────────────────────────
@@ -233,24 +236,39 @@ def main():
         driver_prof.start()
 
     # ── dispatch tasks ────────────────────────────────────────────────────────
+    workers = [
+        EmbedWorkerProfiled.remote(
+            str(out_dir), args.frames_per_video,
+            ts_path, actor_name, i,
+        )
+        for i in range(concurrency)
+    ]
+
     t0 = time.perf_counter()
     futures = [
-        embed_video_profiled.remote(
-            str(v), str(out_dir), args.frames_per_video,
-            i % concurrency, ts_path, actor_name,
-        )
+        workers[i % concurrency].process.remote(str(v))
         for i, v in enumerate(videos)
     ]
 
     ok = failed = cached = 0
-    for i, res in enumerate(ray.get(futures), 1):
-        s = res.get("status", "")
-        if   s == "ok":     ok     += 1
-        elif s == "cached": cached += 1
-        else:               failed += 1
-        if i % 50 == 0 or i == len(videos):
-            print(f"  [{i}/{len(videos)}]  ok={ok}  cached={cached}  "
+    total   = len(videos)
+    pending = list(futures)
+    while pending:
+        done, pending = ray.wait(pending, num_returns=min(50, len(pending)), timeout=60)
+        for res in ray.get(done):
+            s = res.get("status", "")
+            if   s == "ok":     ok     += 1
+            elif s == "cached": cached += 1
+            else:
+                failed += 1
+                print(f"    ERROR: {Path(res['path']).name}: {s}")
+        completed = ok + failed + cached
+        if completed % 50 == 0 or completed == total:
+            print(f"  [{completed}/{total}]  ok={ok}  cached={cached}  "
                   f"failed={failed}  {time.perf_counter()-t0:.1f}s")
+
+    # Stop torchscope profiling inside each actor before collecting reports
+    ray.get([w.stop_profiling.remote() for w in workers])
 
     elapsed = time.perf_counter() - t0
     print(f"\nDone: {len(videos)} videos in {elapsed:.1f}s  "
