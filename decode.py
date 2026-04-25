@@ -51,7 +51,7 @@ def decode_gpu_threaded(video_path: str, max_frames: int = 512,
     for i in range(0, len(all_f), batch_size):
         chunk = all_f[i : i + batch_size]
         batch = torch.stack([
-            torch.as_tensor(np.array(f), device=device).clone() for f in chunk
+            torch.from_dlpack(f).to(device) for f in chunk
         ])
         batches.append(batch)
 
@@ -98,7 +98,7 @@ def decode_gpu_simple(video_path: str, max_frames: int = 512,
     for i in range(0, len(frames), batch_size):
         chunk = frames[i : i + batch_size]
         batch = torch.stack([
-            torch.as_tensor(np.array(f), device=device).clone() for f in chunk
+            torch.from_dlpack(f).to(device) for f in chunk
         ])
         batches.append(batch)
 
