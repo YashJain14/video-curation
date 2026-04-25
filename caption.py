@@ -49,12 +49,15 @@ class CaptionWorker:
         self.processor = AutoProcessor.from_pretrained(MODEL_ID)
 
     def process(self, video_path: str, frames_per_video: int, cache_dir: str) -> dict:
+        import traceback
         cache_path = Path(cache_dir) / (Path(video_path).stem + ".caption.json")
         if cache_path.exists():
             return json.loads(cache_path.read_text())
 
         t0 = time.perf_counter()
         try:
+            print(f"[caption] START {Path(video_path).name}", flush=True)
+
             messages = [
                 {
                     "role": "user",
@@ -69,24 +72,29 @@ class CaptionWorker:
                     ],
                 }
             ]
-
+            print(f"[caption] apply_chat_template ...", flush=True)
             text = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
+            print(f"[caption] process_vision_info ...", flush=True)
             image_inputs, video_inputs, video_kwargs = process_vision_info(
                 messages, return_video_kwargs=True,
             )
+            print(f"[caption] video_kwargs={video_kwargs}", flush=True)
+            print(f"[caption] processor ...", flush=True)
             inputs = self.processor(
                 text=[text], images=image_inputs, videos=video_inputs,
                 padding=True, return_tensors="pt", **video_kwargs
             ).to("cuda")
 
+            print(f"[caption] generate ...", flush=True)
             with torch.inference_mode():
                 out_ids = self.model.generate(**inputs, max_new_tokens=128)
             trimmed = [out[len(inp):] for out, inp in zip(out_ids, inputs.input_ids)]
             caption = self.processor.batch_decode(
                 trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0].strip()
+            print(f"[caption] DONE: {caption[:80]}", flush=True)
 
             result = {
                 "path":    video_path,
@@ -98,6 +106,8 @@ class CaptionWorker:
             cache_path.write_text(json.dumps(result))
             return result
         except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[caption] FAILED {Path(video_path).name}:\n{tb}", flush=True)
             return {"path": video_path, "status": f"failed: {e}", "caption": ""}
 
 
