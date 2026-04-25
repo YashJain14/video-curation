@@ -74,8 +74,7 @@ class CaptionWorker:
                 messages, tokenize=False, add_generation_prompt=True
             )
             image_inputs, video_inputs, video_kwargs = process_vision_info(
-                [messages], return_video_kwargs=True,
-                image_patch_size=16,
+                messages, return_video_kwargs=True,
             )
             inputs = self.processor(
                 text=[text], images=image_inputs, videos=video_inputs,
