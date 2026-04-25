@@ -20,7 +20,9 @@ pip install "numpy<2" matplotlib
 
 # Video decode
 pip install pynvvideocodec
-pip install opencv-python-headless
+# opencv-python-headless 4.11+ is built against NumPy 2 ABI; pin <4.11 to stay
+# compatible with the numpy<2 pin above (faiss-gpu requires NumPy 1).
+pip install "opencv-python-headless<4.11"
 
 # CLIP + embeddings
 pip install transformers accelerate
