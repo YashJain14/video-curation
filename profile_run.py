@@ -129,11 +129,11 @@ class EmbedWorkerProfiled:
 
         t0 = time.perf_counter()
         try:
-            from decode import decode_video
-            batches, _, backend = decode_video(
+            from decode import decode_video_actor
+            batches, _, backend = decode_video_actor(
                 video_path, max_frames=64, batch_size=16, device=self.device
             )
-            is_gpu = backend in ("pynvvideocodec_threaded", "pynvvideocodec_simple")
+            is_gpu = False  # decode_video_actor always uses PyAV (CPU)
             frames = _sample_frames(batches, self.frames_per_video, is_gpu)
             if not frames:
                 return {"path": video_path, "status": "failed: no frames"}
