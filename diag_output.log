@@ -1,0 +1,131 @@
+============================================================
+DIAGNOSTIC JOB  host=asp2a-gpu004  date=Sat Apr 25 09:29:28 +08 2026
+============================================================
+
+--- Environment ---
+Python:       Python 3.10.20
+PyTorch:      2.6.0+cu124 | CUDA: 12.4 | GPUs: 4
+PyNvVideoCodec: 2.1.0
+pip pynvvideocodec: Version: 2.1.0
+GPUs:
+0, NVIDIA A100-SXM4-40GB, 40960 MiB, 550.163.01
+1, NVIDIA A100-SXM4-40GB, 40960 MiB, 550.163.01
+2, NVIDIA A100-SXM4-40GB, 40960 MiB, 550.163.01
+3, NVIDIA A100-SXM4-40GB, 40960 MiB, 550.163.01
+
+Test video: /home/users/ntu/yash012/scratch/video-curation/raw_videos/stretching_leg/TbOqddhTNL0_000083_000093.mp4
+
+============================================================
+TEST 1: decode.py standalone (GPU decode, single process)
+============================================================
+Backend : pynvvideocodec
+Frames  : 64
+Batches : 4
+Time    : 0.335s  (191.0 fps)
+TEST 1 exit=0
+
+============================================================
+TEST 2: embed.py  num_gpus=1 (4 actors, 1 GPU)
+============================================================
+Linked 50 videos into /raid/pbs.13894465.pbs101/tmp.GtHjPC7mmd
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
+wandb: Currently logged in as: yashjain14 (rlx-labs) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.26.1
+wandb: Run data is saved locally in /home/users/ntu/yash012/video-curation/wandb/run-20260425_092952-am5eft55
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run embed-stage
+wandb: ⭐️ View project at https://wandb.ai/rlx-labs/video-curation
+wandb: 🚀 View run at https://wandb.ai/rlx-labs/video-curation/runs/am5eft55
+2026-04-25 09:30:02,040	INFO worker.py:2003 -- Started a local Ray instance. View the dashboard at [1m[32m127.0.0.1:8265 [39m[22m
+/home/users/ntu/yash012/miniconda3/envs/video_curation_env/lib/python3.10/site-packages/ray/_private/worker.py:2051: FutureWarning: Tip: In future versions of Ray, Ray will no longer override accelerator visible devices env var if num_gpus=0 or num_gpus=None (default). To enable this behavior and turn off this error message, set RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+  warnings.warn(
+[36m(EmbedWorker pid=3714221)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 28375.54it/s]
+[36m(EmbedWorker pid=3714226)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]
+[36m(EmbedWorker pid=3714226)[0m Loading weights: 100%|██████████| 398/398 [00:00<00:00, 28888.69it/s]
+wandb: updating run metadata
+wandb: uploading wandb-summary.json; uploading config.yaml
+wandb: uploading history steps 0-0, summary, console lines 6-8
+wandb: 
+wandb: Run history:
+wandb:    embed/cached ▁
+wandb: embed/completed ▁
+wandb: embed/elapsed_s ▁
+wandb:    embed/failed ▁
+wandb:        embed/ok ▁
+wandb:     embed/total ▁
+wandb: 
+wandb: Run summary:
+wandb:    embed/cached 0
+wandb: embed/completed 50
+wandb: embed/elapsed_s 27.85677
+wandb:    embed/failed 0
+wandb:        embed/ok 50
+wandb:     embed/total 50
+wandb: 
+wandb: 🚀 View run embed-stage at: https://wandb.ai/rlx-labs/video-curation/runs/am5eft55
+wandb: ⭐️ View project at: https://wandb.ai/rlx-labs/video-curation
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260425_092952-am5eft55/logs
+[36m(EmbedWorker pid=3714227)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 28790.54it/s][32m [repeated 2x across cluster] (Ray deduplicates logs by default. Set RAY_DEDUP_LOGS=0 to disable log deduplication, or see https://docs.ray.io/en/master/ray-observability/user-guides/configure-logging.html#log-deduplication for more options.)[0m
+Found 50 videos in /raid/pbs.13894465.pbs101/tmp.GtHjPC7mmd
+Actors: 4 (4 per GPU × 1 GPUs)
+  [50/50]  ok=50  cached=0  failed=0  elapsed=27.9s
+
+Embeddings saved → /tmp/diag_embeddings_1gpu
+TEST 2 exit=0
+
+============================================================
+TEST 3: embed.py  num_gpus=4 (16 actors, 4 GPUs) — same 50 videos
+============================================================
+Linked 50 videos into /raid/pbs.13894465.pbs101/tmp.UecEtneO35
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
+wandb: Currently logged in as: yashjain14 (rlx-labs) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.26.1
+wandb: Run data is saved locally in /home/users/ntu/yash012/video-curation/wandb/run-20260425_093054-3srbg70l
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run embed-stage
+wandb: ⭐️ View project at https://wandb.ai/rlx-labs/video-curation
+wandb: 🚀 View run at https://wandb.ai/rlx-labs/video-curation/runs/3srbg70l
+2026-04-25 09:31:05,550	INFO worker.py:2003 -- Started a local Ray instance. View the dashboard at [1m[32m127.0.0.1:8265 [39m[22m
+/home/users/ntu/yash012/miniconda3/envs/video_curation_env/lib/python3.10/site-packages/ray/_private/worker.py:2051: FutureWarning: Tip: In future versions of Ray, Ray will no longer override accelerator visible devices env var if num_gpus=0 or num_gpus=None (default). To enable this behavior and turn off this error message, set RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+  warnings.warn(
+[36m(EmbedWorker pid=3732787)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]
+[36m(EmbedWorker pid=3732787)[0m Loading weights: 100%|██████████| 398/398 [00:00<00:00, 26455.78it/s]
+[36m(EmbedWorker pid=3732797)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 25105.02it/s]
+wandb: updating run metadata
+wandb: uploading output.log; uploading wandb-summary.json
+wandb: uploading history steps 0-0, summary, console lines 6-8
+wandb: 
+wandb: Run history:
+wandb:    embed/cached ▁
+wandb: embed/completed ▁
+wandb: embed/elapsed_s ▁
+wandb:    embed/failed ▁
+wandb:        embed/ok ▁
+wandb:     embed/total ▁
+wandb: 
+wandb: Run summary:
+wandb:    embed/cached 0
+wandb: embed/completed 50
+wandb: embed/elapsed_s 33.78596
+wandb:    embed/failed 0
+wandb:        embed/ok 50
+wandb:     embed/total 50
+wandb: 
+wandb: 🚀 View run embed-stage at: https://wandb.ai/rlx-labs/video-curation/runs/3srbg70l
+wandb: ⭐️ View project at: https://wandb.ai/rlx-labs/video-curation
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260425_093054-3srbg70l/logs
+[36m(EmbedWorker pid=3732793)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s][32m [repeated 3x across cluster] (Ray deduplicates logs by default. Set RAY_DEDUP_LOGS=0 to disable log deduplication, or see https://docs.ray.io/en/master/ray-observability/user-guides/configure-logging.html#log-deduplication for more options.)[0m
+[36m(EmbedWorker pid=3732793)[0m Loading weights: 100%|██████████| 398/398 [00:00<00:00, 24694.64it/s][32m [repeated 3x across cluster][0m
+[36m(EmbedWorker pid=3732796)[0m Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 27568.59it/s][32m [repeated 11x across cluster][0m
+Found 50 videos in /raid/pbs.13894465.pbs101/tmp.UecEtneO35
+Actors: 16 (4 per GPU × 4 GPUs)
+  [50/50]  ok=50  cached=0  failed=0  elapsed=33.8s
+
+Embeddings saved → /tmp/diag_embeddings_4gpu
+TEST 3 exit=0
+
+============================================================
+DIAGNOSTIC COMPLETE  Sat Apr 25 09:31:50 +08 2026
+============================================================
