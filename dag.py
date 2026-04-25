@@ -142,9 +142,10 @@ def task_motion(num_workers: int):
 
 
 @task(name="caption", retries=1)
-def task_caption(frames_per_video: int, num_gpus: int, min_score: float):
+def task_caption(frames_per_video: int, num_gpus: int,
+                 min_score: float, min_motion: float, enable_v2: bool):
     p = _paths()
-    _run([
+    cmd = [
         sys.executable, "caption.py",
         "--video_dir",        str(p["videos"]),
         "--out",              str(p["data"] / "captions.json"),
@@ -152,7 +153,15 @@ def task_caption(frames_per_video: int, num_gpus: int, min_score: float):
         "--num_gpus",         str(num_gpus),
         "--scores",           str(p["data"] / "scores.json"),
         "--min_score",        str(min_score),
-    ], "caption")
+    ]
+    # In v2, motion scores are available before captioning — filter here to
+    # avoid paying Qwen3-VL compute on clips that will fail motion gate at shard.
+    if enable_v2:
+        motion_path = p["data"] / "motion_scores.json"
+        if motion_path.exists():
+            cmd += ["--motion",     str(motion_path),
+                    "--min_motion", str(min_motion)]
+    _run(cmd, "caption")
 
 
 @task(name="caption_quality", retries=1)
@@ -244,8 +253,8 @@ def curation_pipeline(
     num_gpus:          int   = 1,
     dedup_threshold:   float = 0.95,
     min_score:         float = 4.5,
-    min_motion:        float = 3.0,
-    min_quality:       float = 0.3,
+    min_motion:        float = 5.0,
+    min_quality:       float = 0.65,
     shard_size:        int   = 200,
     source:            str   = "kinetics400",
     latent_frames:     int   = 16,
@@ -299,7 +308,7 @@ def curation_pipeline(
         task_motion(num_workers=num_gpus * 4)
 
     if stage_idx <= STAGES.index("caption"):
-        task_caption(frames_per_video, num_gpus, min_score)
+        task_caption(frames_per_video, num_gpus, min_score, min_motion, enable_v2)
 
     if enable_v2 and stage_idx <= STAGES.index("caption_quality"):
         task_caption_quality(num_gpus)
@@ -328,10 +337,10 @@ def main():
                     help="Number of GPUs for Ray-parallel stages")
     ap.add_argument("--dedup_threshold",   type=float, default=0.95)
     ap.add_argument("--min_score",         type=float, default=4.5)
-    ap.add_argument("--min_motion",        type=float, default=3.0,
-                    help="Motion quality threshold (v2 only)")
-    ap.add_argument("--min_quality",       type=float, default=0.3,
-                    help="Caption quality threshold (v2 only)")
+    ap.add_argument("--min_motion",        type=float, default=5.0,
+                    help="Motion quality threshold (v2 only); p25 of Kinetics distribution")
+    ap.add_argument("--min_quality",       type=float, default=0.65,
+                    help="Caption quality threshold (v2 only); ~p50 of quality distribution")
     ap.add_argument("--shard_size",        type=int,   default=200)
     ap.add_argument("--source",            default="kinetics400",
                     help="Dataset source tag for composition tracking")

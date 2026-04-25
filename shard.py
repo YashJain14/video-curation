@@ -120,14 +120,14 @@ def write_shards(
             continue
 
         motion_info  = motion.get(video_path, {})
-        motion_score = motion_info.get("motion_score", 0.0)
-        if motion and motion_score < min_motion:
+        motion_score = motion_info.get("motion_score") if motion_info else None
+        if motion and (motion_score is None or motion_score < min_motion):
             skipped_motion += 1
             continue
 
-        cq_info      = caption_quality.get(video_path, {})
-        quality_score = cq_info.get("quality_score", 1.0)   # default 1.0 if no CQ run
-        if caption_quality and quality_score < min_quality:
+        cq_info       = caption_quality.get(video_path, {})
+        quality_score = cq_info.get("quality_score") if cq_info else None
+        if caption_quality and (quality_score is None or quality_score < min_quality):
             skipped_quality += 1
             continue
 
@@ -147,10 +147,10 @@ def write_shards(
             "source":           source,
             "label":            label,
             "aesthetic_score":  mean_score,
-            "motion_score":     motion_score,
-            "caption_quality":  quality_score,
-            "clip_alignment":   cq_info.get("clip_alignment", None),
-            "caption_length":   cq_info.get("caption_length", None),
+            "motion_score":     motion_score,        # None if motion stage not run
+            "caption_quality":  quality_score,       # None if caption_quality stage not run
+            "clip_alignment":   cq_info.get("clip_alignment") if cq_info else None,
+            "caption_length":   cq_info.get("caption_length") if cq_info else None,
             "clip_embedding":   embedding,
         }
 
