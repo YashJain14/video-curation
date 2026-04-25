@@ -39,6 +39,9 @@ pip install qwen-vl-utils[decord]
 # WebDataset
 pip install webdataset
 
+# VAE latent encoding (v2 encode_latents.py)
+pip install diffusers
+
 # Orchestration
 pip install prefect
 
