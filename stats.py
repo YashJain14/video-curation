@@ -29,6 +29,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import wandb
 
 
 def label_distribution(video_dir: Path) -> dict:
@@ -183,6 +184,11 @@ def main():
     video_dir = Path(args.video_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="stats-stage", resume="allow", id="stats-stage",
+               config={"video_dir": args.video_dir,
+                       "min_clips": args.min_clips})
+
     stats = {}
 
     print("Label distribution ...")
@@ -230,6 +236,52 @@ def main():
     with open(out_json, "w") as f:
         json.dump(stats, f, indent=2)
     print(f"\nStats saved → {out_json}")
+
+    # Push to wandb
+    log_payload = {
+        "stats/n_classes":           stats.get("n_classes", 0),
+        "stats/total_clips":         stats.get("total_clips", 0),
+        "stats/n_underrepresented":  len(under),
+    }
+    if "scores" in stats:
+        s = stats["scores"]
+        log_payload.update({
+            "stats/score_mean":     s.get("mean", 0.0),
+            "stats/score_median":   s.get("median", 0.0),
+            "stats/score_std":      s.get("std", 0.0),
+            "stats/pct_above_4_5":  s.get("pct_above_4.5", 0.0),
+            "stats/pct_above_5_0":  s.get("pct_above_5.0", 0.0),
+        })
+    if "dedup" in stats:
+        d = stats["dedup"]
+        log_payload.update({
+            "stats/dedup_kept":      d.get("kept", 0),
+            "stats/dedup_removed":   d.get("removed", 0),
+            "stats/duplicate_pct":   d.get("duplicate_pct", 0.0),
+        })
+    if "captions" in stats:
+        c = stats["captions"]
+        log_payload.update({
+            "stats/captioned":           c.get("captioned", 0),
+            "stats/caption_coverage_pct": c.get("coverage_pct", 0.0),
+        })
+
+    # Attach charts as wandb Images
+    for chart_name in ("stats_score_histogram.png",
+                       "stats_label_distribution.png",
+                       "stats_embedding_pca.png"):
+        chart_path = out_dir / chart_name
+        if chart_path.exists():
+            log_payload[f"stats/{chart_path.stem}"] = wandb.Image(str(chart_path))
+
+    # Label distribution as a wandb Table for sortable inspection
+    if label_counts:
+        tbl = wandb.Table(columns=["label", "count"],
+                          data=[[k, v] for k, v in label_counts.items()])
+        log_payload["stats/label_distribution"] = tbl
+
+    wandb.log(log_payload)
+    wandb.finish()
 
     # Print summary
     print(f"\n{'─'*50}")

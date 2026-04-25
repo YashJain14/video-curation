@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 import faiss
+import wandb
 
 
 def exact_dedup(video_paths: list[str]) -> tuple[list[str], list[str]]:
@@ -159,6 +160,12 @@ def main():
     t0      = time.perf_counter()
     exact_removed = []
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="dedup-stage", resume="allow", id="dedup-stage",
+               config={"threshold": args.threshold,
+                       "video_dir": args.video_dir,
+                       "emb_dir":   str(emb_dir)})
+
     # ── Stage 1: Exact dedup ──────────────────────────────────────────────────
     if args.video_dir:
         all_videos = [str(p) for p in Path(args.video_dir).rglob("*.mp4")]
@@ -201,6 +208,16 @@ def main():
             "total":         total,
         }, f, indent=2)
     print(f"\nResults saved → {out}")
+
+    wandb.log({
+        "dedup/exact_removed": len(exact_removed),
+        "dedup/near_removed":  len(near_removed),
+        "dedup/kept":          len(kept),
+        "dedup/total":         total,
+        "dedup/near_removed_pct": 100 * len(near_removed) / max(total, 1),
+        "dedup/elapsed_s":     elapsed,
+    })
+    wandb.finish()
 
 
 if __name__ == "__main__":

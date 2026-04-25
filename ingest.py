@@ -37,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
+import wandb
 
 S3_BASE        = "https://s3.amazonaws.com/kinetics/400"
 VAL_PATH_LIST  = f"{S3_BASE}/val/k400_val_path.txt"
@@ -198,6 +199,13 @@ def main():
     print(f"Tar limit  : {args.limit}")
     print(f"Workers    : {args.workers}")
 
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name="ingest-stage", resume="allow", id="ingest-stage",
+               config={"split":   args.split,
+                       "limit":   args.limit,
+                       "workers": args.workers,
+                       "out_dir": str(out_dir)})
+
     csv_path     = download_annotation_csv(args.split, Path(scratch))
     label_lookup = load_label_lookup(csv_path)
     print(f"  Label lookup: {len(label_lookup)} entries")
@@ -226,11 +234,23 @@ def main():
                       f"failed={failed}  clips={total_clips}  {elapsed:.1f}s")
 
     elapsed = time.perf_counter() - t0
+    n_labels = len(set(p.parent.name for p in out_dir.rglob('*.mp4')))
     print(f"\nDone in {elapsed:.1f}s")
     print(f"  ok={ok}  cached={cached}  failed={failed}")
     print(f"  Total clips: {total_clips}")
-    print(f"  Labels found: {len(set(p.parent.name for p in out_dir.rglob('*.mp4')))}")
+    print(f"  Labels found: {n_labels}")
     print(f"  Output: {out_dir}")
+
+    wandb.log({
+        "ingest/tars_ok":     ok,
+        "ingest/tars_cached": cached,
+        "ingest/tars_failed": failed,
+        "ingest/total_clips": total_clips,
+        "ingest/n_labels":    n_labels,
+        "ingest/elapsed_s":   elapsed,
+        "ingest/clips_per_s": total_clips / max(elapsed, 1e-6),
+    })
+    wandb.finish()
 
 
 if __name__ == "__main__":

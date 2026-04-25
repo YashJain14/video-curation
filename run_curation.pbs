@@ -27,6 +27,7 @@ echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", to
 export WANDB_API_KEY=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
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
+export HF_HUB_OFFLINE=1
 export SCRATCH_DIR="$HOME/scratch/video-curation"
 mkdir -p "$SCRATCH_DIR"
 echo "Scratch: $SCRATCH_DIR"

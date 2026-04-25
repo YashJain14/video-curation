@@ -37,6 +37,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import wandb
+
 
 def create_manifest(version: str, video_dir: str, dedup_path: str,
                     scores_path: str, shards_dir: str,
@@ -107,6 +109,22 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
     print(f"  Dedup   : {dedup_stats.get('kept', '?')} kept")
     print(f"  Scoring : {score_stats.get('passing', '?')} passing")
     print(f"  Shards  : {len(shard_files)} files  ({round(total_bytes/1e6,1)} MB)")
+
+    wandb.init(project="video-curation", entity="rlx-labs",
+               name=f"manifest-{version}", resume="allow",
+               id=f"manifest-{version}", config=config)
+    wandb.log({
+        "manifest/version":          version,
+        "manifest/total_videos":     len(all_videos),
+        "manifest/dedup_kept":       dedup_stats.get("kept", 0),
+        "manifest/dedup_removed":    dedup_stats.get("removed", 0),
+        "manifest/scoring_passing":  score_stats.get("passing", 0),
+        "manifest/scoring_mean":     score_stats.get("mean", 0.0),
+        "manifest/n_shards":         len(shard_files),
+        "manifest/total_mb":         round(total_bytes / 1e6, 1),
+    })
+    wandb.save(str(out))
+    wandb.finish()
 
 
 def list_manifests(manifest_dir: str):
