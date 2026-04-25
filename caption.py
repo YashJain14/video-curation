@@ -29,7 +29,7 @@ import ray
 import wandb
 from PIL import Image
 
-from decode import decode_video
+from decode import decode_video_actor
 
 
 MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
@@ -74,8 +74,8 @@ class CaptionWorker:
 
         t0 = time.perf_counter()
         try:
-            batches, _, backend = decode_video(video_path, max_frames=64,
-                                               batch_size=16, device="cuda")
+            batches, _, backend = decode_video_actor(video_path, max_frames=64,
+                                                    batch_size=16)
             is_gpu = backend != "opencv_cpu"
             frames = _sample_frames_pil(batches, frames_per_video, is_gpu)
             if not frames:
@@ -128,7 +128,7 @@ def main():
     print(f"Actors: {args.num_gpus} (1 per GPU)")
 
     wandb.init(project="video-curation", entity="rlx-labs",
-               name="caption", resume="allow", id="caption-stage")
+               name="caption", resume="allow")
 
     ray.init(num_gpus=args.num_gpus, ignore_reinit_error=True)
 
