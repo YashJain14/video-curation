@@ -2,20 +2,19 @@
 caption.py
 ----------
 VLM-based captioning for video clips using Qwen3-VL-8B-Instruct.
-Samples N keyframes per video, passes them to the VLM, generates a
-single descriptive caption per clip.
+Passes the raw video file directly to the model — no manual frame extraction.
 
 Captions are stored in data/captions.json and later embedded into
 WebDataset shards alongside the video bytes.
 
 Why Qwen3-VL:
-  - Strong video understanding, handles multi-frame input natively
-  - Open weights, runs on a single A100 in 4-bit or bf16
+  - Native video input — handles frame sampling internally
+  - Open weights, runs on a single A100 in bf16
   - Outputs natural language captions suitable for text-conditioned training
 
 Usage:
   python caption.py --video_dir data/raw_videos --out data/captions.json \
-                    --frames_per_video 4 --num_gpus 4
+                    --frames_per_video 16 --num_gpus 4
 """
 
 import argparse
@@ -23,37 +22,20 @@ import json
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 import ray
 import wandb
-from PIL import Image
-
-from decode import decode_video_actor
+from qwen_vl_utils import process_vision_info
 
 
 MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
 
 CAPTION_PROMPT = (
     "You are a video captioning assistant. "
-    "Given several keyframes from a short video clip, write a single concise sentence "
+    "Given a short video clip, write a single concise sentence "
     "describing the main action, subject, and setting. "
-    "Be specific about motion and appearance. Do not mention 'frames' or 'images'."
+    "Be specific about motion and appearance."
 )
-
-
-def _sample_frames_pil(batches, n, is_gpu):
-    all_frames = []
-    for b in batches:
-        if is_gpu:
-            for i in range(b.shape[0]):
-                all_frames.append(b[i].cpu().numpy())
-        else:
-            all_frames.extend(b)
-    if not all_frames:
-        return []
-    indices = np.linspace(0, len(all_frames) - 1, min(n, len(all_frames)), dtype=int)
-    return [Image.fromarray(all_frames[i]) for i in indices]
 
 
 @ray.remote(num_gpus=1)
@@ -67,35 +49,42 @@ class CaptionWorker:
         self.processor = AutoProcessor.from_pretrained(MODEL_ID)
 
     def process(self, video_path: str, frames_per_video: int, cache_dir: str) -> dict:
-        import json
         cache_path = Path(cache_dir) / (Path(video_path).stem + ".caption.json")
         if cache_path.exists():
             return json.loads(cache_path.read_text())
 
         t0 = time.perf_counter()
         try:
-            batches, _, backend = decode_video_actor(video_path, max_frames=64,
-                                                    batch_size=16)
-            is_gpu = backend != "opencv_cpu"
-            frames = _sample_frames_pil(batches, frames_per_video, is_gpu)
-            if not frames:
-                return {"path": video_path, "status": "failed: no frames", "caption": ""}
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video",
+                            "video": video_path,
+                            "max_pixels": 128 * 32 * 32,
+                            "max_frames": frames_per_video,
+                        },
+                        {"type": "text", "text": CAPTION_PROMPT},
+                    ],
+                }
+            ]
 
-            content = [{"type": "text", "text": CAPTION_PROMPT}]
-            for img in frames:
-                content.append({"type": "image", "image": img})
-
-            messages = [{"role": "user", "content": content}]
-            inputs = self.processor.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True,
-                return_dict=True, return_tensors="pt"
-            ).to(self.model.device)
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            image_inputs, video_inputs, video_kwargs = process_vision_info(
+                [messages], return_video_kwargs=True,
+                image_patch_size=16, return_video_metadata=True
+            )
+            inputs = self.processor(
+                text=[text], images=image_inputs, videos=video_inputs,
+                padding=True, return_tensors="pt", **video_kwargs
+            ).to("cuda")
 
             with torch.inference_mode():
                 out_ids = self.model.generate(**inputs, max_new_tokens=128)
-            trimmed = [
-                out[len(in_ids):] for in_ids, out in zip(inputs["input_ids"], out_ids)
-            ]
+            trimmed = [out[len(inp):] for out, inp in zip(out_ids, inputs.input_ids)]
             caption = self.processor.batch_decode(
                 trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0].strip()
