@@ -56,7 +56,7 @@ pip install requests
 pip install "ray[default]"
 
 # Profiling: torchscope dependencies + local checkout
-pip install plotly jinja2
+pip install plotly jinja2 pynvml
 # Clone your torchscope repo and install as editable:
 #   git clone https://github.com/YashJain14/torchscope.git ~/torchscope
 #   pip install -e ~/torchscope

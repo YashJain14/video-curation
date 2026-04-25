@@ -28,7 +28,7 @@ mkdir -p "$SCRATCH_DIR/reports"
 echo "Scratch: $SCRATCH_DIR"
 echo "Videos:  $(find $SCRATCH_DIR/raw_videos -name '*.mp4' | wc -l) clips"
 
-pip install plotly jinja2 -q
+pip install plotly jinja2 pynvml -q
 
 python profile_run.py \
     --video_dir    "$SCRATCH_DIR/raw_videos" \
