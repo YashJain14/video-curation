@@ -67,7 +67,8 @@ python dedup.py \
   --emb_dir    $SCRATCH_DIR/embeddings \
   --threshold  0.95 \
   --out        $SCRATCH_DIR/dedup_results.json \
-  --index_path $SCRATCH_DIR/faiss.index
+  --index_path $SCRATCH_DIR/faiss.index \
+  --md5_cache  $SCRATCH_DIR/md5_cache.json
 ```
 
 | Argument       | Default                      | Description                              |
@@ -77,6 +78,7 @@ python dedup.py \
 | `--threshold`  | `0.95`                       | Cosine similarity cutoff for near-dedup  |
 | `--out`        | `data/dedup_results.json`    | Output JSON path                         |
 | `--index_path` | `None`                       | Path to save/load FAISS index            |
+| `--md5_cache`  | `None`                       | JSON cache of {path: md5}; skips re-reading unchanged video files on reruns |
 
 ---
 
@@ -119,15 +121,18 @@ Why not IVF or HNSW:
 
 ---
 
-## v1 Run Metrics
+## Run Metrics
 
-| Metric                  | Value              |
-|-------------------------|--------------------|
-| Input videos            | 9,998              |
-| Exact duplicates removed| 0                  |
-| Near-duplicates removed | 54 (0.54%)         |
-| Final kept              | 9,944              |
-| Elapsed                 | 91s                |
+| Metric | Value |
+|--------|-------|
+| Input videos | 9,998 |
+| Exact duplicates removed | 0 |
+| Near-duplicates removed | 54 (0.54%) |
+| Final kept | 9,944 |
+| Elapsed (cold, no md5_cache) | 10:15 |
+| Elapsed (warm, md5_cache hit) | ~2 min (skips ~40 GB of video I/O) |
+
+**MD5 cache:** On reruns, `md5_cache.json` stores `{path: md5}` so unmodified files are not re-read from disk. With 10k videos averaging ~4 MB each, cold MD5 hashing reads ~40 GB; the cache reduces this to near-zero on subsequent runs.
 
 ---
 
