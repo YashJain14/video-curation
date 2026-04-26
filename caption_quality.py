@@ -186,7 +186,7 @@ def main():
                     help="Directory of .npz embeddings from embed.py")
     ap.add_argument("--out",          default="data/caption_quality.json")
     ap.add_argument("--num_gpus",     type=int, default=1)
-    ap.add_argument("--min_quality",  type=float, default=0.3,
+    ap.add_argument("--min_quality",  type=float, default=0.65,
                     help="Quality score threshold for downstream shard filtering")
     ap.add_argument("--min_alignment",type=float, default=0.20,
                     help="CLIP alignment threshold")

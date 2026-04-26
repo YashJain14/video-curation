@@ -44,8 +44,8 @@ Usage:
     --source        kinetics400 \\
     --shard_size    200 \\
     --min_score     4.5 \\
-    --min_motion    3.0 \\
-    --min_quality   0.3
+    --min_motion    5.0 \\
+    --min_quality   0.65
 """
 
 import argparse
@@ -209,8 +209,8 @@ def main():
                          "Used for composition tracking in mixed-dataset training.")
     ap.add_argument("--shard_size",       type=int,   default=200)
     ap.add_argument("--min_score",        type=float, default=4.5)
-    ap.add_argument("--min_motion",       type=float, default=3.0)
-    ap.add_argument("--min_quality",      type=float, default=0.3)
+    ap.add_argument("--min_motion",       type=float, default=5.0)
+    ap.add_argument("--min_quality",      type=float, default=0.65)
     args = ap.parse_args()
 
     t0 = time.perf_counter()
