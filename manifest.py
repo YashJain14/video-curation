@@ -163,7 +163,7 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
     wandb.init(project="video-curation", entity="rlx-labs",
                name=f"manifest-{version}", resume="allow",
                config=config)
-    wandb.log({
+    log = {
         "manifest/version":          version,
         "manifest/total_videos":     len(all_videos),
         "manifest/dedup_kept":       dedup_stats.get("kept", 0),
@@ -171,8 +171,17 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
         "manifest/scoring_passing":  score_stats.get("passing", 0),
         "manifest/scoring_mean":     score_stats.get("mean", 0.0),
         "manifest/n_shards":         len(shard_files),
+        "manifest/total_samples":    total_samples,
         "manifest/total_mb":         round(total_bytes / 1e6, 1),
-    })
+    }
+    if motion_stats:
+        log["manifest/motion_passing"] = motion_stats.get("passing", 0)
+        log["manifest/motion_mean"]    = motion_stats.get("mean", 0.0)
+    if caption_quality_stats:
+        log["manifest/caption_quality_passing"]       = caption_quality_stats.get("passing", 0)
+        log["manifest/caption_quality_mean"]          = caption_quality_stats.get("mean_quality", 0.0)
+        log["manifest/caption_clip_alignment_mean"]   = caption_quality_stats.get("mean_clip_alignment", 0.0)
+    wandb.log(log)
     wandb.save(str(out))
     wandb.finish()
 
