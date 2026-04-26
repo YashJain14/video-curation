@@ -49,8 +49,8 @@ Usage:
     --motion     $SCRATCH_DIR/motion_scores.json \\
     --captions_quality $SCRATCH_DIR/caption_quality.json \\
     --min_score  4.5 \\
-    --min_motion 3.0 \\
-    --min_quality 0.3 \\
+    --min_motion 5.0 \\
+    --min_quality 0.65 \\
     --num_gpus   4 \\
     --num_frames 16 \\
     --resolution 256
@@ -120,16 +120,12 @@ class LatentEncodeWorker:
         t0 = time.perf_counter()
         try:
             frames = _decode_frames_pyav(video_path, self.num_frames, self.resolution)
-            # frames: [T, 3, H, W]  →  encode one frame at a time to save VRAM
-            latents = []
+            # frames: [T, 3, H, W] — batch encode all frames in one forward pass
             with torch.inference_mode():
-                for frame in frames:
-                    x   = frame.unsqueeze(0).to(self.device)   # [1, 3, H, W]
-                    lat = self.vae.encode(x).latent_dist.mode()
-                    latents.append(lat.squeeze(0).cpu().half()) # [4, H//8, W//8]
-
-            # Stack along temporal dim: [4, T, H//8, W//8]
-            latent_tensor = torch.stack(latents, dim=1)
+                x = frames.to(self.device)                        # [T, 3, H, W]
+                lat = self.vae.encode(x).latent_dist.mode()      # [T, 4, H//8, W//8]
+                # Rearrange to [4, T, H//8, W//8] for temporal indexing
+                latent_tensor = lat.permute(1, 0, 2, 3).cpu().half()
 
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             torch.save(latent_tensor, out_path)
@@ -184,8 +180,8 @@ def main():
     ap.add_argument("--motion",            default=None)
     ap.add_argument("--captions_quality",  default=None)
     ap.add_argument("--min_score",         type=float, default=4.5)
-    ap.add_argument("--min_motion",        type=float, default=3.0)
-    ap.add_argument("--min_quality",       type=float, default=0.3)
+    ap.add_argument("--min_motion",        type=float, default=5.0)
+    ap.add_argument("--min_quality",       type=float, default=0.65)
     ap.add_argument("--num_gpus",          type=int,   default=1)
     ap.add_argument("--num_frames",        type=int,   default=16,
                     help="Frames to encode per video (temporal depth of latent)")
