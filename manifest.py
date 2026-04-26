@@ -42,7 +42,8 @@ import wandb
 
 def create_manifest(version: str, video_dir: str, dedup_path: str,
                     scores_path: str, shards_dir: str,
-                    config: dict, out_path: str):
+                    config: dict, out_path: str,
+                    motion_path: str = None, caption_quality_path: str = None):
 
     # Source videos
     all_videos = sorted(str(p) for p in Path(video_dir).rglob("*.mp4"))
@@ -53,13 +54,13 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
         with open(dedup_path) as f:
             dedup = json.load(f)
         dedup_stats = {
-            "total":   dedup.get("total", len(all_videos)),
-            "kept":    len(dedup.get("kept", [])),
-            "removed": len(dedup.get("removed", [])),
+            "total":     dedup.get("total", len(all_videos)),
+            "kept":      len(dedup.get("kept", [])),
+            "removed":   len(dedup.get("removed", [])),
             "threshold": dedup.get("threshold", None),
         }
 
-    # Score stats
+    # Aesthetic score stats
     score_stats = {}
     if Path(scores_path).exists():
         with open(scores_path) as f:
@@ -67,20 +68,62 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
         valid   = [s["mean_score"] for s in scores if s.get("status") == "ok"]
         passing = [s for s in valid if s >= config.get("min_score", 4.5)]
         score_stats = {
-            "scored":  len(valid),
-            "passing": len(passing),
-            "mean":    round(sum(valid) / max(len(valid), 1), 3),
+            "scored":              len(valid),
+            "passing":             len(passing),
+            "mean":                round(sum(valid) / max(len(valid), 1), 3),
             "min_score_threshold": config.get("min_score", 4.5),
         }
 
-    # Shard stats
+    # Motion quality stats (v2)
+    motion_stats = {}
+    if motion_path and Path(motion_path).exists():
+        with open(motion_path) as f:
+            motion = json.load(f)
+        valid_m  = [r["motion_score"] for r in motion if r.get("status") == "ok"]
+        min_mot  = config.get("min_motion", 5.0)
+        passing_m = [s for s in valid_m if s >= min_mot]
+        import numpy as np
+        motion_stats = {
+            "scored":               len(valid_m),
+            "passing":              len(passing_m),
+            "mean":                 round(float(np.mean(valid_m)), 3) if valid_m else 0,
+            "min_motion_threshold": min_mot,
+        }
+
+    # Caption quality stats (v2)
+    caption_quality_stats = {}
+    if caption_quality_path and Path(caption_quality_path).exists():
+        with open(caption_quality_path) as f:
+            cq = json.load(f)
+        valid_cq   = [r["quality_score"] for r in cq if r.get("status") == "ok"]
+        valid_align = [r["clip_alignment"] for r in cq if r.get("status") == "ok"]
+        min_qual   = config.get("min_quality", 0.65)
+        passing_cq = [s for s in valid_cq if s >= min_qual]
+        caption_quality_stats = {
+            "scored":                len(valid_cq),
+            "passing":               len(passing_cq),
+            "mean_quality":          round(float(np.mean(valid_cq)), 3) if valid_cq else 0,
+            "mean_clip_alignment":   round(float(np.mean(valid_align)), 3) if valid_align else 0,
+            "min_quality_threshold": min_qual,
+        }
+
+    # Shard stats — count samples by reading each tar's member list
     shard_files = sorted(Path(shards_dir).glob("*.tar")) if Path(shards_dir).exists() else []
+    import tarfile as _tarfile
     shards_info = []
-    total_bytes = 0
+    total_bytes  = 0
+    total_samples = 0
     for s in shard_files:
         sz = s.stat().st_size
         total_bytes += sz
-        shards_info.append({"name": s.name, "size_bytes": sz})
+        # Count .mp4 members as proxy for sample count (fast, no extraction)
+        try:
+            with _tarfile.open(s, "r") as tf:
+                n = sum(1 for m in tf.getmembers() if m.name.endswith(".mp4"))
+        except Exception:
+            n = 0
+        total_samples += n
+        shards_info.append({"name": s.name, "size_bytes": sz, "samples": n})
 
     manifest = {
         "version":    version,
@@ -90,13 +133,16 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
             "video_dir":    video_dir,
             "total_videos": len(all_videos),
         },
-        "dedup":   dedup_stats,
-        "scoring": score_stats,
+        "dedup":            dedup_stats,
+        "scoring":          score_stats,
+        "motion":           motion_stats,
+        "caption_quality":  caption_quality_stats,
         "shards": {
-            "count":       len(shard_files),
-            "total_bytes": total_bytes,
-            "total_mb":    round(total_bytes / 1e6, 1),
-            "files":       shards_info,
+            "count":         len(shard_files),
+            "total_samples": total_samples,
+            "total_bytes":   total_bytes,
+            "total_mb":      round(total_bytes / 1e6, 1),
+            "files":         shards_info,
         },
     }
 
@@ -105,10 +151,14 @@ def create_manifest(version: str, video_dir: str, dedup_path: str,
     with open(out, "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"Manifest saved → {out}")
-    print(f"  Videos  : {len(all_videos)}")
-    print(f"  Dedup   : {dedup_stats.get('kept', '?')} kept")
-    print(f"  Scoring : {score_stats.get('passing', '?')} passing")
-    print(f"  Shards  : {len(shard_files)} files  ({round(total_bytes/1e6,1)} MB)")
+    print(f"  Videos          : {len(all_videos)}")
+    print(f"  Dedup kept      : {dedup_stats.get('kept', '?')}")
+    print(f"  Aesthetic pass  : {score_stats.get('passing', '?')}")
+    if motion_stats:
+        print(f"  Motion pass     : {motion_stats.get('passing', '?')}")
+    if caption_quality_stats:
+        print(f"  Quality pass    : {caption_quality_stats.get('passing', '?')}")
+    print(f"  Shards          : {len(shard_files)} files  ({round(total_bytes/1e6,1)} MB)  {total_samples} samples")
 
     wandb.init(project="video-curation", entity="rlx-labs",
                name=f"manifest-{version}", resume="allow",
@@ -158,15 +208,24 @@ def diff_manifests(path_a: str, path_b: str):
         delta = ""
         if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
             delta = f"  (Δ {vb - va:+.1f})"
-        print(f"  {label:<30} {str(va):>12} → {str(vb):>12}{delta}")
+        print(f"  {label:<32} {str(va):>12} → {str(vb):>12}{delta}")
 
-    show("Total videos",   a["sources"]["total_videos"],       b["sources"]["total_videos"])
-    show("Dedup kept",     a["dedup"].get("kept","?"),          b["dedup"].get("kept","?"))
-    show("Dedup threshold",a["dedup"].get("threshold","?"),     b["dedup"].get("threshold","?"))
-    show("Scoring passing",a["scoring"].get("passing","?"),     b["scoring"].get("passing","?"))
-    show("Min score",      a["scoring"].get("min_score_threshold","?"), b["scoring"].get("min_score_threshold","?"))
-    show("Shards",         a["shards"]["count"],                b["shards"]["count"])
-    show("Total MB",       a["shards"]["total_mb"],             b["shards"]["total_mb"])
+    show("Total videos",    a["sources"]["total_videos"],       b["sources"]["total_videos"])
+    show("Dedup kept",      a["dedup"].get("kept","?"),          b["dedup"].get("kept","?"))
+    show("Dedup threshold", a["dedup"].get("threshold","?"),     b["dedup"].get("threshold","?"))
+    show("Scoring passing", a["scoring"].get("passing","?"),     b["scoring"].get("passing","?"))
+    show("Min score",       a["scoring"].get("min_score_threshold","?"), b["scoring"].get("min_score_threshold","?"))
+    # v2 motion gate
+    if a.get("motion") or b.get("motion"):
+        show("Motion passing",  a.get("motion",{}).get("passing","—"),  b.get("motion",{}).get("passing","—"))
+        show("Min motion",      a.get("motion",{}).get("min_motion_threshold","—"), b.get("motion",{}).get("min_motion_threshold","—"))
+    # v2 caption quality gate
+    if a.get("caption_quality") or b.get("caption_quality"):
+        show("Caption qual passing", a.get("caption_quality",{}).get("passing","—"), b.get("caption_quality",{}).get("passing","—"))
+        show("Min quality",          a.get("caption_quality",{}).get("min_quality_threshold","—"), b.get("caption_quality",{}).get("min_quality_threshold","—"))
+    show("Shards",          a["shards"]["count"],                b["shards"]["count"])
+    show("Total samples",   a["shards"].get("total_samples","?"), b["shards"].get("total_samples","?"))
+    show("Total MB",        a["shards"]["total_mb"],             b["shards"]["total_mb"])
 
 
 def main():
@@ -175,14 +234,18 @@ def main():
 
     # create
     cp = sub.add_parser("create")
-    cp.add_argument("--version",   required=True)
-    cp.add_argument("--video_dir", required=True)
-    cp.add_argument("--dedup",     required=True)
-    cp.add_argument("--scores",    required=True)
-    cp.add_argument("--shards",    required=True)
-    cp.add_argument("--out",       required=True)
-    cp.add_argument("--min_score", type=float, default=4.5)
-    cp.add_argument("--dedup_threshold", type=float, default=0.95)
+    cp.add_argument("--version",          required=True)
+    cp.add_argument("--video_dir",        required=True)
+    cp.add_argument("--dedup",            required=True)
+    cp.add_argument("--scores",           required=True)
+    cp.add_argument("--shards",           required=True)
+    cp.add_argument("--out",              required=True)
+    cp.add_argument("--min_score",        type=float, default=4.5)
+    cp.add_argument("--dedup_threshold",  type=float, default=0.95)
+    cp.add_argument("--motion",           default=None, help="Path to motion_scores.json (v2)")
+    cp.add_argument("--min_motion",       type=float,   default=5.0)
+    cp.add_argument("--caption_quality",  default=None, help="Path to caption_quality.json (v2)")
+    cp.add_argument("--min_quality",      type=float,   default=0.65)
 
     # list
     lp = sub.add_parser("list")
@@ -199,9 +262,13 @@ def main():
         config = {
             "min_score":        args.min_score,
             "dedup_threshold":  args.dedup_threshold,
+            "min_motion":       args.min_motion,
+            "min_quality":      args.min_quality,
         }
         create_manifest(args.version, args.video_dir, args.dedup,
-                        args.scores, args.shards, config, args.out)
+                        args.scores, args.shards, config, args.out,
+                        motion_path=args.motion,
+                        caption_quality_path=args.caption_quality)
     elif args.cmd == "list":
         list_manifests(args.manifest_dir)
     elif args.cmd == "diff":

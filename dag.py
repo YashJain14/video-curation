@@ -228,9 +228,11 @@ def task_shard(shard_size: int, min_score: float, min_motion: float,
 
 
 @task(name="manifest")
-def task_manifest(version: str, min_score: float, dedup_threshold: float):
+def task_manifest(version: str, min_score: float, dedup_threshold: float,
+                  min_motion: float = 5.0, min_quality: float = 0.65,
+                  enable_v2: bool = True):
     p = _paths()
-    _run([
+    cmd = [
         sys.executable, "manifest.py", "create",
         "--version",         version,
         "--video_dir",       str(p["videos"]),
@@ -240,7 +242,15 @@ def task_manifest(version: str, min_score: float, dedup_threshold: float):
         "--out",             str(p["manifest"] / f"{version}.json"),
         "--min_score",       str(min_score),
         "--dedup_threshold", str(dedup_threshold),
-    ], "manifest")
+    ]
+    if enable_v2:
+        motion_path = p["data"] / "motion_scores.json"
+        cq_path     = p["data"] / "caption_quality.json"
+        if motion_path.exists():
+            cmd += ["--motion",    str(motion_path), "--min_motion",  str(min_motion)]
+        if cq_path.exists():
+            cmd += ["--caption_quality", str(cq_path), "--min_quality", str(min_quality)]
+    _run(cmd, "manifest")
 
 
 @flow(name="video-curation-pipeline")
@@ -321,7 +331,9 @@ def curation_pipeline(
         task_shard(shard_size, min_score, min_motion, min_quality, source, enable_v2)
 
     if stage_idx <= STAGES.index("manifest"):
-        task_manifest(version, min_score, dedup_threshold)
+        task_manifest(version, min_score, dedup_threshold,
+                      min_motion=min_motion, min_quality=min_quality,
+                      enable_v2=enable_v2)
 
     wandb.finish()
 
