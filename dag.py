@@ -115,6 +115,7 @@ def task_dedup(threshold: float):
         "--threshold",  str(threshold),
         "--out",        str(p["data"] / "dedup_results.json"),
         "--index_path", str(p["data"] / "faiss.index"),
+        "--md5_cache",  str(p["data"] / "md5_cache.json"),
     ], "dedup")
 
 
