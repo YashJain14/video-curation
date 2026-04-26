@@ -3,7 +3,7 @@
 End-to-end pipeline that downloads Kinetics-400 clips from S3, runs CLIP embeddings, deduplication, aesthetic scoring, motion quality scoring, VLM captioning, caption quality analysis, VAE latent pre-encoding, and writes training-ready WebDataset shards with versioned manifests.
 
 **Hardware target:** NVIDIA A100-SXM4-40GB · CUDA 12.4 · PyTorch 2.6  
-**Cluster:** NTU HPC · PBS scheduler · 4× A100 GPUs per node
+**Cluster:** NSCC HPC · PBS scheduler · 4× A100 GPUs per node
 
 ---
 

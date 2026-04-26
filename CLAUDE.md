@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 End-to-end video curation pipeline: downloads Kinetics-400 clips from S3, runs CLIP embeddings, two-stage deduplication, aesthetic scoring, VLM captioning, and writes training-ready WebDataset shards with versioned manifests.
 
 **Hardware target:** NVIDIA A100-SXM4-40GB · CUDA 12.4 · PyTorch 2.6  
-**Cluster:** NTU HPC · PBS scheduler · 4× A100 GPUs per node
+**Cluster:** NSCC HPC · PBS scheduler · 4× A100 GPUs per node
 
 ## v2 Changes (Research-Grade Curation Branch)
 

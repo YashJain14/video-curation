@@ -88,7 +88,7 @@ scratch = Path(os.environ.get("SCRATCH_DIR") or
                os.path.expanduser("~/scratch/video-curation"))
 ```
 
-On the NTU HPC cluster, `SCRATCH_DIR` is set in the PBS job script. Locally it defaults to `~/scratch/video-curation`.
+On the NSCC HPC cluster, `SCRATCH_DIR` is set in the PBS job script. Locally it defaults to `~/scratch/video-curation`.
 
 ---
 
