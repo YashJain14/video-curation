@@ -1,6 +1,6 @@
 # Setup & Cluster Configuration
 
-Everything needed to set up the environment, prefetch model weights, and submit jobs on the NTU HPC cluster.
+Everything needed to set up the environment, prefetch model weights, and submit jobs on the NSCC HPC cluster.
 
 ---
 

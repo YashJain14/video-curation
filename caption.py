@@ -111,22 +111,34 @@ def main():
     ap.add_argument("--num_gpus",         type=int, default=1,
                     help="One CaptionWorker per GPU — num_gpus tasks in parallel.")
     ap.add_argument("--scores",           default=None,
-                    help="Path to scores.json; if provided, only caption videos above --min_score.")
+                    help="Path to scores.json; filters to videos with mean_score >= --min_score.")
     ap.add_argument("--min_score",        type=float, default=4.5)
+    ap.add_argument("--motion",           default=None,
+                    help="Path to motion_scores.json; filters to videos with motion_score >= --min_motion.")
+    ap.add_argument("--min_motion",       type=float, default=5.0)
     ap.add_argument("--ray_address",      default=None)
     args = ap.parse_args()
 
     all_videos = sorted(Path(args.video_dir).rglob("*.mp4"))
+    passing = {str(v) for v in all_videos}
 
     if args.scores:
         with open(args.scores) as f:
             scores = json.load(f)
-        passing = {r["path"] for r in scores if r.get("mean_score", 0) >= args.min_score}
-        videos = [v for v in all_videos if str(v) in passing]
-        print(f"Score filter: {len(videos)}/{len(all_videos)} videos pass mean_score >= {args.min_score}")
-    else:
-        videos = all_videos
+        score_passing = {r["path"] for r in scores if r.get("mean_score", 0) >= args.min_score}
+        passing &= score_passing
+        print(f"Aesthetic filter : {len(score_passing)}/{len(all_videos)} pass mean_score >= {args.min_score}")
 
+    if args.motion:
+        with open(args.motion) as f:
+            motion = json.load(f)
+        motion_passing = {r["path"] for r in motion
+                          if r.get("status") == "ok" and r.get("motion_score", 0) >= args.min_motion}
+        passing &= motion_passing
+        print(f"Motion filter    : {len(motion_passing)}/{len(all_videos)} pass motion_score >= {args.min_motion}")
+
+    videos = [v for v in all_videos if str(v) in passing]
+    print(f"After all filters: {len(videos)}/{len(all_videos)} videos to caption")
     print(f"Captioning {len(videos)} videos with {MODEL_ID} ...")
     print(f"Actors: {args.num_gpus} (1 per GPU)")
 

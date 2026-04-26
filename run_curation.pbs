@@ -24,7 +24,13 @@ echo "Python:  $(python --version 2>&1)"
 echo "PyTorch: $(python -c 'import torch; print(torch.__version__, "| GPUs:", torch.cuda.device_count())')"
 
 # ── Scratch storage ───────────────────────────────────────────────────────────
-export WANDB_API_KEY=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
+# WANDB_API_KEY must be set in the environment before submitting.
+# Never hardcode credentials in PBS scripts.
+# Set via:  export WANDB_API_KEY=<your_key>  on the login node before qsub.
+if [ -z "$WANDB_API_KEY" ]; then
+    echo "ERROR: WANDB_API_KEY is not set. Export it on the login node before qsub." >&2
+    exit 1
+fi
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HUB_OFFLINE=1
@@ -33,30 +39,42 @@ mkdir -p "$SCRATCH_DIR"
 echo "Scratch: $SCRATCH_DIR"
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CSV="$SCRATCH_DIR/kinetics400_val.csv"
-VERSION="v1"
+VERSION="v2"
 LIMIT=10                # number of S3 tar files (~50 clips each → ~500 clips total)
 FRAMES=8                # frames sampled per video for CLIP / scoring
 NUM_GPUS=4              # GPUs available on this node
 MIN_SCORE=4.5           # LAION aesthetic threshold
+MIN_MOTION=5.0          # motion quality threshold (v2): p25 of Kinetics distribution
+MIN_QUALITY=0.65        # caption quality threshold (v2): ~p50 of quality distribution
 DEDUP_THRESH=0.95       # cosine similarity threshold for near-dedup
 SHARD_SIZE=200          # samples per WebDataset shard
+SOURCE="kinetics400"    # dataset source tag for composition tracking
+LATENT_FRAMES=16        # frames per video for VAE latent encoding
+LATENT_RES=256          # spatial resolution before VAE 8× downsampling
 
 # ── GPU concurrency summary ───────────────────────────────────────────────────
-# embed:   0.25 GPU/task → 16 concurrent tasks  (4 GPUs × 4 tasks/GPU)
-# score:   0.25 GPU/task → 16 concurrent tasks
-# caption: 1.0  GPU/task →  4 concurrent tasks  (one per GPU, Qwen3-VL-8B)
+# embed:          0.25 GPU/task → 16 concurrent tasks  (4 GPUs × 4 tasks/GPU)
+# score:          0.25 GPU/task → 16 concurrent tasks
+# caption:        1.0  GPU/task →  4 concurrent tasks  (one per GPU, Qwen3-VL-8B)
+# motion:         CPU-only      → 16 workers
+# caption_quality: 0.5 GPU/task →  8 concurrent tasks
+# encode_latents: 0.5 GPU/task →  8 concurrent tasks
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# ── Run (v2 — all stages including motion, caption quality, latent encoding) ──
 python dag.py \
-    --split            val \
-    --version          $VERSION \
-    --limit            $LIMIT \
-    --frames_per_video $FRAMES \
-    --num_gpus         $NUM_GPUS \
-    --dedup_threshold  $DEDUP_THRESH \
-    --min_score        $MIN_SCORE \
-    --shard_size       $SHARD_SIZE \
-    --from_stage       ingest
+    --split             val \
+    --version           $VERSION \
+    --limit             $LIMIT \
+    --frames_per_video  $FRAMES \
+    --num_gpus          $NUM_GPUS \
+    --dedup_threshold   $DEDUP_THRESH \
+    --min_score         $MIN_SCORE \
+    --min_motion        $MIN_MOTION \
+    --min_quality       $MIN_QUALITY \
+    --shard_size        $SHARD_SIZE \
+    --source            $SOURCE \
+    --latent_frames     $LATENT_FRAMES \
+    --latent_resolution $LATENT_RES \
+    --from_stage        ingest
 
 echo "Job completed at $(date)"

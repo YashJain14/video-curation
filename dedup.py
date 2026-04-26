@@ -39,25 +39,45 @@ import faiss
 import wandb
 
 
-def exact_dedup(video_paths: list[str]) -> tuple[list[str], list[str]]:
+def exact_dedup(video_paths: list[str],
+                cache_path: Path | None = None) -> tuple[list[str], list[str]]:
     """
     Stage 1: MD5-based exact deduplication.
     Hashes every file; keeps first occurrence of each hash.
+    md5_cache stores {path: md5} so reruns skip re-reading unchanged files.
     Returns (kept, removed).
     """
-    seen   = {}
-    kept   = []
+    md5_cache: dict[str, str] = {}
+    if cache_path and cache_path.exists():
+        with open(cache_path) as f:
+            md5_cache = json.load(f)
+        print(f"  MD5 cache loaded: {len(md5_cache)} entries")
+
+    seen    = {}
+    kept    = []
     removed = []
+    dirty   = False
     for path in video_paths:
         p = Path(path)
         if not p.exists():
             continue
-        md5 = hashlib.md5(p.read_bytes()).hexdigest()
+        if path in md5_cache:
+            md5 = md5_cache[path]
+        else:
+            md5 = hashlib.md5(p.read_bytes()).hexdigest()
+            md5_cache[path] = md5
+            dirty = True
         if md5 in seen:
             removed.append(path)
         else:
             seen[md5] = path
             kept.append(path)
+
+    if dirty and cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(md5_cache, f)
+
     return kept, removed
 
 
@@ -171,6 +191,8 @@ def main():
     ap.add_argument("--out",        default="data/dedup_results.json")
     ap.add_argument("--index_path", default=None,
                     help="Path to save/load persistent FAISS index. If exists, skips rebuild.")
+    ap.add_argument("--md5_cache",  default=None,
+                    help="Path to cache MD5 hashes across reruns (avoids re-reading video files).")
     args = ap.parse_args()
 
     emb_dir = Path(args.emb_dir)
@@ -188,7 +210,8 @@ def main():
     if args.video_dir:
         all_videos = [str(p) for p in Path(args.video_dir).rglob("*.mp4")]
         print(f"Stage 1 — Exact dedup (MD5) over {len(all_videos)} videos ...")
-        after_exact, exact_removed = exact_dedup(all_videos)
+        md5_cache_path = Path(args.md5_cache) if args.md5_cache else None
+        after_exact, exact_removed = exact_dedup(all_videos, md5_cache_path)
         print(f"  Exact duplicates removed : {len(exact_removed)}")
         print(f"  Remaining                : {len(after_exact)}")
     else:
